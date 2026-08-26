@@ -1,0 +1,1033 @@
+// MedConnect — Foundation schema (Segments 1 & 2: roles, orgs, accounts, invitations)
+// plus Segment 4 (Case creation and ownership).
+// Segments 3, 5-12 (Document, ValidationRule, ...) attach via nullable FKs
+// added in later migrations, matching the precedent AuditEvent.caseId set
+// before Case existed.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs" // project has no "type": "module" — keeps seed/test/CLI scripts running under plain Node/tsx friction-free
+}
+
+datasource db {
+  provider = "postgresql"
+  // url lives in prisma.config.ts (Prisma 7: datasource.url is set there, not here)
+}
+
+enum UserRole {
+  super_admin
+  client_admin
+  provider_user
+}
+
+enum AccountStatus {
+  invited
+  active
+  suspended
+  deactivated
+}
+
+enum ClientCapability {
+  assistance_company
+  insurance_company
+}
+
+// Convenience flag only — the source of truth for whether a Provider is
+// "connected" is the existence of an active ProviderClientRelationship row.
+enum ProviderMode {
+  standalone
+  client_connected
+}
+
+enum RelationshipStatus {
+  pending
+  active
+  suspended
+  terminated
+}
+
+enum InvitationStatus {
+  pending
+  accepted
+  expired
+  revoked
+}
+
+enum CaseMode {
+  standalone
+  client_connected
+}
+
+enum CaseSource {
+  ui
+  api
+}
+
+enum ExternalReferenceSource {
+  client
+  insurer
+  provider
+  partner_api
+  manual
+}
+
+enum ProviderCaseAccess {
+  creator_only
+  provider_shared
+}
+
+// Full Segment 8 lifecycle enum, defined now even though this phase only
+// ever sets/transitions draft <-> archived (restore reverts to draft) —
+// avoids a painful rename/removal migration on a populated table later.
+// Postgres enum additions are cheap; this is the same "anticipate the shape
+// before its segment is built" precedent as AuditEvent.caseId.
+enum CaseStatus {
+  draft
+  documents_in_progress
+  ready_for_validation
+  validating
+  provider_action_required
+  client_review_required
+  validated
+  validated_with_issues
+  submitted_to_client
+  returned_to_provider
+  accepted
+  rejected
+  liquidated
+  closed
+  cancelled
+  archived
+}
+
+enum OwnershipScope {
+  global
+  client
+}
+
+enum RuleCategory {
+  document_requirement
+  field_extraction
+  data_consistency
+  date_validation
+  eligibility
+  medical_clause
+  financial_validation
+  // flags for review only — never auto-labels a person/Provider as
+  // fraudulent. UI-copy note; no enforcement code needed since nothing
+  // auto-acts on this yet.
+  fraud_indicator
+}
+
+enum RuleExecutionType {
+  deterministic
+  ai_assisted
+}
+
+// V1 closed set — deliberately NOT a general DSL/JSONLogic/CEL. A 10th
+// operation is a migration + Zod-union addition, never a schema redesign.
+enum DeterministicOperation {
+  required_document
+  required_field
+  equals
+  not_equals
+  date_between
+  date_before
+  date_after
+  amount_less_than_or_equal
+  amount_greater_than
+}
+
+// Shared by ValidationRule.status and ValidationScheme.status.
+enum PublicationStatus {
+  draft
+  published
+  archived
+}
+
+// Matches Segment 7's severity vocabulary exactly — same concept, not a
+// parallel enum.
+enum RuleSeverity {
+  info
+  warning
+  blocking
+}
+
+// Matches spec Segment 3 Section 20 verbatim. Stored as inert config this
+// phase — no HITL execution exists yet (Segment 7/8's job).
+enum HitlPolicy {
+  never
+  on_needs_review
+  on_fail
+  always
+}
+
+// ============================================================================
+// Segment 5 — Document Upload and Versioning (data model, storage,
+// authorization, deterministic upload/versioning pipeline only; AI
+// classification, split detection, OCR-based readability, async job
+// processing, and the Client document-request workflow are deferred to
+// Segment 6/7 — see the plan doc for the exact build-vs-defer split).
+// ============================================================================
+
+// This phase always writes "skipped" — see the NoOpMalwareScanner stub.
+// pending/clean/infected/failed are reserved for a real AV integration later.
+enum MalwareScanStatus {
+  pending
+  skipped
+  clean
+  infected
+  failed
+}
+
+// This phase only ever persists "readable" — corrupted/password_protected
+// are pre-storage rejections (never reach a row); partially_readable/
+// unreadable need blur/darkness/crop assessment (OCR/vision), deferred to
+// Segment 6.
+enum ReadabilityStatus {
+  pending
+  readable
+  partially_readable
+  unreadable
+  password_protected
+  corrupted
+}
+
+// This phase only ever persists "pending" (awaiting confirm-type) or
+// "confirmed" (Provider explicitly chose it) — no classifier exists yet.
+enum ClassificationStatus {
+  pending
+  processing
+  suggested
+  confirmed
+  unclear
+  failed
+}
+
+// Full spec §20 vocabulary, defined now even though this phase only ever
+// reaches needs_type_confirmation/ready/archived — same "anticipate the
+// shape before its segment is built" precedent as CaseStatus. The rest
+// (uploading/processing/needs_split_confirmation/partially_readable/
+// unreadable/failed) require async jobs, a split detector, or a vision-based
+// readability check that don't exist yet.
+enum DocumentStatus {
+  uploading
+  processing
+  needs_type_confirmation
+  needs_split_confirmation
+  ready
+  partially_readable
+  unreadable
+  failed
+  archived
+}
+
+enum ReplacementReason {
+  clearer_copy
+  missing_pages
+  corrected_document
+  wrong_document
+  updated_information
+  requested_by_client
+  other
+}
+
+// ============================================================================
+// Segment 6 — AI Extraction and Classification (data models only this phase;
+// see the plan doc for what's deferred — classification/extraction logic,
+// OCR execution, caching, token budgets, confidence-threshold config, and
+// the AI provider integration itself all require infrastructure that
+// doesn't exist yet).
+// ============================================================================
+
+enum ClassificationMethod {
+  provider_selected
+  metadata
+  filename
+  deterministic_text
+  specialized_model
+  generative_ai
+}
+
+enum ExtractionValueType {
+  string
+  date
+  number
+  money
+  boolean
+  identifier
+  code
+}
+
+enum ExtractionMethod {
+  embedded_text
+  deterministic_parser
+  ocr
+  specialized_model
+  generative_ai
+  provider_entered
+  client_reviewed
+}
+
+// Deliberately not collapsed into one generic error/success pair — each
+// value means something distinct the UI must show differently (spec §11).
+enum ExtractionStatus {
+  extracted
+  confirmed
+  corrected
+  absent
+  unreadable
+  low_confidence
+  inconsistent
+  invalid
+  failed
+}
+
+enum ProcessingJobTask {
+  read_text
+  ocr
+  classify
+  extract
+  normalize
+}
+
+enum ProcessingJobStatus {
+  queued
+  processing
+  completed
+  failed
+  cancelled
+  superseded
+}
+
+model User {
+  id           String        @id @default(uuid())
+  email        String        @unique // always normalized (trim + lowercase) before write
+  role         UserRole
+  status       AccountStatus @default(invited)
+  passwordHash String? // null until first login sets a permanent password (see Invitation.tempPasswordHash)
+  firstName    String
+  lastName     String
+
+  // Conditional per role: provider_user -> providerId set, clientId null;
+  // client_admin -> clientId set, providerId null; super_admin -> both null.
+  // Enforced in the service layer plus a DB CHECK constraint (see migration.sql).
+  providerId String?
+  provider   Provider? @relation(fields: [providerId], references: [id])
+  clientId   String?
+  client     Client?   @relation(fields: [clientId], references: [id])
+
+  createdByUserId String?
+  createdBy       User?   @relation("UserCreatedBy", fields: [createdByUserId], references: [id])
+  createdUsers    User[]  @relation("UserCreatedBy")
+
+  invitations        Invitation[]
+  sessions           Session[]
+  auditEventsAsActor AuditEvent[] @relation("AuditActor")
+  casesCreated       Case[]       @relation("CaseCreatedBy")
+  casesAssigned      Case[]       @relation("CaseAssignedTo")
+
+  rulesCreated            ValidationRule[]          @relation("RuleCreatedBy")
+  ruleVersionsPublished   ValidationRuleVersion[]   @relation("RuleVersionPublishedBy")
+  schemesCreated          ValidationScheme[]        @relation("SchemeCreatedBy")
+  schemeVersionsPublished ValidationSchemeVersion[] @relation("SchemeVersionPublishedBy")
+
+  sourceFilesUploaded    SourceFile[]      @relation("SourceFileUploadedBy")
+  documentsCreated       Document[]        @relation("DocumentCreatedBy")
+  documentVersionsCreated DocumentVersion[] @relation("DocumentVersionCreatedBy")
+  extractedFieldsConfirmed ExtractedField[] @relation("ExtractedFieldConfirmedBy")
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  suspendedAt    DateTime?
+  deactivatedAt  DateTime?
+
+  @@index([role])
+  @@index([providerId])
+  @@index([clientId])
+}
+
+model Client {
+  id           String             @id @default(uuid())
+  legalName    String
+  capabilities ClientCapability[] // app enforces length >= 1
+  status       AccountStatus      @default(active)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  admins        User[]
+  relationships ProviderClientRelationship[]
+  auditEvents   AuditEvent[]                 @relation("AuditClient")
+  cases         Case[]
+
+  ownedRules   ValidationRule[]   @relation("ClientOwnedRules")
+  ownedSchemes ValidationScheme[] @relation("ClientOwnedSchemes")
+}
+
+model Provider {
+  id                         String        @id @default(uuid())
+  legalName                  String
+  normalizedName             String // lowercased/trimmed/punctuation-stripped, for fuzzy duplicate matching
+  mode                       ProviderMode  @default(standalone)
+  country                    String
+  officialRegistrationNumber String?
+  taxId                      String?
+  healthcareLicenseNumber    String?
+  addressLine                String?
+  city                       String?
+  postalCode                 String?
+
+  createdBySuperAdminId  String?
+  createdByClientAdminId String?
+
+  status    AccountStatus @default(active)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  users         User[]
+  relationships ProviderClientRelationship[]
+  auditEvents   AuditEvent[]                 @relation("AuditProvider")
+  cases         Case[]
+  sourceFiles   SourceFile[]
+
+  @@unique([country, officialRegistrationNumber])
+  @@unique([country, taxId])
+  @@index([normalizedName])
+}
+
+model ProviderClientRelationship {
+  id         String             @id @default(uuid())
+  providerId String
+  provider   Provider           @relation(fields: [providerId], references: [id])
+  clientId   String
+  client     Client             @relation(fields: [clientId], references: [id])
+  status     RelationshipStatus @default(pending)
+
+  createdAt    DateTime  @default(now())
+  activatedAt  DateTime?
+  suspendedAt  DateTime?
+  terminatedAt DateTime?
+
+  auditEvents AuditEvent[]
+  cases       Case[]
+
+  @@unique([providerId, clientId])
+}
+
+model Invitation {
+  id                    String           @id @default(uuid())
+  userId                String
+  user                  User             @relation(fields: [userId], references: [id])
+  status                InvitationStatus @default(pending)
+  tempPasswordHash      String // hashed, never stored in plaintext
+  tempPasswordExpiresAt DateTime
+  usedAt                DateTime?
+  revokedAt             DateTime?
+  invitedByUserId       String
+  createdAt             DateTime         @default(now())
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Session {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+
+  @@index([userId])
+}
+
+model AuditEvent {
+  id             String                      @id @default(uuid())
+  eventType      String // validated in the app layer against Segment 11's event list
+  actorUserId    String?
+  actor          User?                       @relation("AuditActor", fields: [actorUserId], references: [id])
+  actorRole      UserRole?
+  providerId     String?
+  provider       Provider?                   @relation("AuditProvider", fields: [providerId], references: [id])
+  clientId       String?
+  client         Client?                     @relation("AuditClient", fields: [clientId], references: [id])
+  relationshipId String?
+  relationship   ProviderClientRelationship? @relation(fields: [relationshipId], references: [id])
+  caseId         String?
+  // SetNull (not Restrict/Cascade): a hard-deleted eligible draft Case must
+  // not be blocked by its own audit rows, and audit history must survive
+  // the delete (append-only principle) — see prisma/rls.sql's
+  // audit_select_super_admin policy for the corresponding RLS fix this
+  // requires (targetType != 'Case' must also be checked, not just caseId
+  // IS NULL, or a hard-deleted Case's audit rows would leak to Super Admin).
+  case           Case?                       @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  targetType     String
+  targetId       String
+  action         String
+  source         String // "ui" | "api" | "system"
+  reasonCode     String?
+  createdAt      DateTime                    @default(now())
+
+  @@index([actorUserId])
+  @@index([providerId])
+  @@index([clientId])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
+model Insurer {
+  id        String   @id @default(uuid())
+  name      String
+  country   String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cases   Case[]
+  schemes ValidationScheme[]
+
+  @@unique([name, country])
+}
+
+// Atomic per-year counter for the internal-reference generator
+// (MC-YYYY-NNNNNNN). An INSERT ... ON CONFLICT DO UPDATE ... RETURNING
+// against this table is race-free under concurrency via Postgres's row
+// lock, without needing dynamic per-year `CREATE SEQUENCE` DDL from
+// application code at year rollover.
+model CaseSequence {
+  year      Int @id
+  lastValue Int @default(0)
+}
+
+// Supports session-authenticated Case creation idempotency (no API-key/
+// integration-auth system exists yet, so this is scoped per-Provider rather
+// than per-API-key). caseId is bare/no-FK, same precedent as
+// AuditEvent.caseId before this segment — this is a purely internal replay
+// table, cleaned up explicitly by deleteCaseService on hard delete.
+model IdempotencyKey {
+  id          String   @id @default(uuid())
+  providerId  String
+  key         String
+  requestHash String // sha256 of a canonicalized (sorted-keys) JSON body
+  caseId      String
+  createdAt   DateTime @default(now())
+
+  @@unique([providerId, key])
+}
+
+model Case {
+  id                String     @id @default(uuid())
+  internalReference String     @unique // MC-YYYY-NNNNNNN, backend-generated, immutable, never frontend-supplied
+  caseMode          CaseMode   @default(standalone)
+  source            CaseSource @default(ui)
+  status            CaseStatus @default(draft)
+
+  providerId String
+  provider   Provider @relation(fields: [providerId], references: [id])
+  // Preserved permanently even if this User is later suspended/deactivated —
+  // the Case remains owned by the Provider, never the individual account.
+  createdByUserId    String
+  createdBy          User               @relation("CaseCreatedBy", fields: [createdByUserId], references: [id])
+  assignedToUserId   String?
+  assignedTo         User?              @relation("CaseAssignedTo", fields: [assignedToUserId], references: [id])
+  providerCaseAccess ProviderCaseAccess @default(provider_shared)
+
+  // Recognizing an insurer NEVER grants that insurer (or any Client sharing
+  // its name) access to the Case — insurerId is purely informational
+  // metadata, structurally unrelated to clientId/providerClientRelationshipId below.
+  insurerId String?
+  insurer   Insurer? @relation(fields: [insurerId], references: [id])
+
+  // A Case can never be shared with multiple Clients simultaneously. Client
+  // visibility requires BOTH an explicit clientId AND an active relationship
+  // (checked at query time, not just relationship existence) — see
+  // src/lib/cases/scoping.ts.
+  clientId                      String?
+  client                        Client?                     @relation(fields: [clientId], references: [id])
+  providerClientRelationshipId  String?
+  providerClientRelationship    ProviderClientRelationship? @relation(fields: [providerClientRelationshipId], references: [id])
+  // Real FK now that Segment 3 exists. SetNull matches the AuditEvent.caseId
+  // precedent — scheme versions are never actually hard-deleted in practice
+  // (immutable/preserved), SetNull is just the defensively-consistent choice.
+  validationSchemeVersionId String?
+  validationSchemeVersion   ValidationSchemeVersion? @relation(fields: [validationSchemeVersionId], references: [id], onDelete: SetNull)
+
+  externalReference       String?
+  externalReferenceSource ExternalReferenceSource?
+
+  patientReference String?
+  serviceType      String?
+  eventDate        DateTime?
+
+  version     Int       @default(1) // optimistic concurrency — see src/lib/cases/service.ts
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  submittedAt DateTime?
+  archivedAt  DateTime?
+
+  auditEvents AuditEvent[]
+  documents       Document[]
+  sourceFiles     SourceFile[]
+  extractedFields ExtractedField[]
+
+  // NULL is not distinct-safe for standalone Cases (clientId is null for
+  // all of them) — src/lib/duplicate-detection/case.ts's app-layer check
+  // catches what this constraint structurally cannot (two standalone Cases
+  // with the same external reference). This remains the required DB-level
+  // backstop for the client-connected race the app check can miss.
+  @@unique([providerId, clientId, externalReferenceSource, externalReference])
+  @@index([providerId])
+  @@index([clientId])
+  @@index([status])
+  @@index([createdByUserId])
+  @@index([assignedToUserId])
+  @@index([insurerId])
+}
+
+// ============================================================================
+// Segment 3 — Validation Rules and Rule Reuse (catalog management only; no
+// execution engine — see prisma/schema.prisma's top comment and the plan doc
+// for what's deferred to Segments 5-7).
+// ============================================================================
+
+// Identity/ownership/current-version pointer only — the versioned definition
+// lives on ValidationRuleVersion, never duplicated here, to avoid drift.
+model ValidationRule {
+  id       String         @id @default(uuid())
+  scope    OwnershipScope
+  clientId String? // set iff scope=client; null iff scope=global
+  client   Client?        @relation("ClientOwnedRules", fields: [clientId], references: [id])
+
+  category      RuleCategory // identity attrs that don't change across versions —
+  executionType RuleExecutionType // changing these means "create a new Rule", not an edit
+  name          String // mirrored from currentVersion.name by the service layer whenever it changes
+
+  status           PublicationStatus @default(draft)
+  currentVersionId String?           @unique
+  currentVersion   ValidationRuleVersion?  @relation("RuleCurrentVersion", fields: [currentVersionId], references: [id])
+  versions         ValidationRuleVersion[] @relation("RuleVersions")
+
+  // Promotion provenance (spec Section 10) — set together, only on a rule
+  // freshly created via promotion; never set otherwise. The promoted rule
+  // never mutates its source — enforced by the service layer, not the schema.
+  sourceRuleId        String?
+  sourceRule          ValidationRule?        @relation("RulePromotion", fields: [sourceRuleId], references: [id])
+  promotedRules       ValidationRule[]       @relation("RulePromotion")
+  sourceRuleVersionId String?
+  sourceRuleVersion   ValidationRuleVersion? @relation("PromotionSourceVersion", fields: [sourceRuleVersionId], references: [id])
+
+  createdByUserId String
+  createdBy       User   @relation("RuleCreatedBy", fields: [createdByUserId], references: [id])
+
+  version    Int       @default(1) // optimistic concurrency, same pattern as Case.version
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
+
+  @@index([scope])
+  @@index([clientId])
+  @@index([status])
+  @@index([category])
+}
+
+model ValidationRuleVersion {
+  id            String         @id @default(uuid())
+  ruleId        String
+  rule          ValidationRule @relation("RuleVersions", fields: [ruleId], references: [id])
+  versionNumber Int // 1,2,3... per rule, immutable once assigned
+
+  name        String // snapshot at creation time
+  description String?
+
+  // { operation, parameters } for deterministic; { evaluationQuestion,
+  // evidenceRequirements, applicabilityGate, outputSchema } for ai_assisted.
+  // Cross-validated against executionType by Zod in the service layer —
+  // Prisma stores it as opaque Json.
+  definition    Json
+  // RuleApplicability shape (spec Section 5) — filtered by a pure fn only,
+  // never queried via RLS/SQL.
+  applicability Json @default("{}")
+
+  providerMessageCode String
+  adminMessageCode    String
+  severity            RuleSeverity
+  hitlPolicy          HitlPolicy
+
+  // No `status` column: draft iff publishedAt IS NULL; permanently immutable
+  // once set. A specific version is NEVER itself "archived" — only the
+  // parent Rule's current status changes; historical ValidationSchemeRule
+  // pins keep resolving any version regardless of the parent's status.
+  publishedAt       DateTime?
+  publishedByUserId String?
+  publishedBy       User?     @relation("RuleVersionPublishedBy", fields: [publishedByUserId], references: [id])
+  createdAt         DateTime  @default(now())
+
+  currentForRule      ValidationRule?        @relation("RuleCurrentVersion")
+  promotedAsSourceFor ValidationRule[]       @relation("PromotionSourceVersion")
+  schemeRules         ValidationSchemeRule[]
+
+  @@unique([ruleId, versionNumber])
+  @@index([ruleId])
+  @@index([publishedAt])
+}
+
+model ValidationScheme {
+  id       String         @id @default(uuid())
+  scope    OwnershipScope
+  clientId String?
+  client   Client?        @relation("ClientOwnedSchemes", fields: [clientId], references: [id])
+
+  name         String
+  description  String?
+  insurerId    String?
+  insurer      Insurer? @relation(fields: [insurerId], references: [id])
+  productLine  String?
+  productId    String?
+  countryCodes String[] @default([])
+
+  status           PublicationStatus @default(draft)
+  currentVersionId String?           @unique
+  currentVersion   ValidationSchemeVersion?  @relation("SchemeCurrentVersion", fields: [currentVersionId], references: [id])
+  versions         ValidationSchemeVersion[] @relation("SchemeVersions")
+
+  createdByUserId String
+  createdBy       User   @relation("SchemeCreatedBy", fields: [createdByUserId], references: [id])
+
+  version    Int       @default(1)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
+
+  @@index([scope])
+  @@index([clientId])
+  @@index([status])
+}
+
+model ValidationSchemeVersion {
+  id            String           @id @default(uuid())
+  schemeId      String
+  scheme        ValidationScheme @relation("SchemeVersions", fields: [schemeId], references: [id])
+  versionNumber Int
+
+  publishedAt       DateTime?
+  publishedByUserId String?
+  publishedBy       User?     @relation("SchemeVersionPublishedBy", fields: [publishedByUserId], references: [id])
+  createdAt         DateTime  @default(now())
+
+  currentForScheme        ValidationScheme?        @relation("SchemeCurrentVersion")
+  schemeRules             ValidationSchemeRule[]
+  casesAssigned           Case[]
+  documentTypeDefinitions DocumentTypeDefinition[]
+
+  @@unique([schemeId, versionNumber])
+  @@index([schemeId])
+}
+
+model ValidationSchemeRule {
+  id              String                  @id @default(uuid())
+  schemeVersionId String
+  schemeVersion   ValidationSchemeVersion @relation(fields: [schemeVersionId], references: [id])
+  ruleVersionId   String
+  ruleVersion     ValidationRuleVersion   @relation(fields: [ruleVersionId], references: [id])
+
+  executionOrder     Int         @default(0)
+  // Per-pairing overrides merged over definition.parameters at (future,
+  // Segment 7) evaluation time — this JSON field IS the "Rule Parameter"
+  // concept from spec Section 1; no separate RuleParameter table is built,
+  // since there's no evaluator yet to consume a normalized one.
+  parameters         Json        @default("{}")
+  enabled            Boolean     @default(true)
+  required           Boolean     @default(true)
+  hitlPolicyOverride HitlPolicy?
+  createdAt          DateTime    @default(now())
+
+  @@unique([schemeVersionId, ruleVersionId])
+  @@index([schemeVersionId])
+  @@index([ruleVersionId])
+}
+
+// ============================================================================
+// Segment 5 — Document Upload and Versioning models.
+// ============================================================================
+
+// Pinned to a Scheme VERSION, not the mutable Scheme — spec §3's "a Scheme
+// version retains the exact Document Type definitions used for historical
+// validation" is structurally identical to how ValidationSchemeRule pins a
+// ruleVersionId. `code` is a stable identifier, validated contextually by
+// the app layer against a Case's pinned Scheme version — never an FK target,
+// since upload must also work with NO Scheme pinned (a hardcoded general
+// list) and "Other document" must always be selectable even when a Scheme
+// never configured it (see src/lib/documents/documentTypes.ts).
+model DocumentTypeDefinition {
+  id              String                  @id @default(uuid())
+  schemeVersionId String
+  schemeVersion   ValidationSchemeVersion @relation(fields: [schemeVersionId], references: [id])
+
+  code                String
+  name                String
+  description         String?
+  acceptedMimeTypes   String[] @default([])
+  required            Boolean  @default(false)
+  multipleAllowed     Boolean  @default(true)
+  expectedFields      Json     @default("[]") // inert this phase — Segment 6/7 consume it
+  classificationHints Json     @default("[]") // inert this phase — Segment 6's classifier consumes it
+  captureGuidance     String?
+  displayOrder        Int      @default(0)
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+
+  extractionFieldDefinitions ExtractionFieldDefinition[]
+
+  @@unique([schemeVersionId, code])
+  @@index([schemeVersionId])
+}
+
+// The immutable original upload — one row per uploaded binary. Never
+// modified once created; page exclusion/order/rotation live on
+// DocumentPageReference, applying only to the logical representation.
+model SourceFile {
+  id               String   @id @default(uuid())
+  caseId           String
+  case             Case     @relation(fields: [caseId], references: [id])
+  providerId       String // denormalized from Case.providerId at creation — same precedent as AuditEvent.providerId/clientId
+  provider         Provider @relation(fields: [providerId], references: [id])
+  uploadedByUserId String
+  uploadedBy       User     @relation("SourceFileUploadedBy", fields: [uploadedByUserId], references: [id])
+
+  originalFilename  String // sanitized for display; the immutable bytes are stored separately (spec §26)
+  mimeType          String // sniffed from content bytes, never trusted from the client
+  byteSize          Int
+  contentHash       String // sha256 hex
+  storageKey        String            @unique // opaque StorageAdapter key — never exposed to a client directly
+  malwareScanStatus MalwareScanStatus @default(skipped)
+  pageCount         Int               @default(1)
+  createdAt         DateTime          @default(now())
+
+  versions       DocumentVersion[]
+  pageReferences DocumentPageReference[]
+
+  @@index([caseId])
+  @@index([providerId])
+  @@index([contentHash])
+}
+
+// The logical document — identity/status/current-version pointer only. The
+// versioned content lives on DocumentVersion, never duplicated here.
+model Document {
+  id               String           @id @default(uuid())
+  caseId           String
+  case             Case             @relation(fields: [caseId], references: [id])
+  documentTypeCode String? // loose code; see DocumentTypeDefinition's doc comment for why not an FK
+  status           DocumentStatus   @default(needs_type_confirmation)
+  currentVersionId String?          @unique
+  currentVersion   DocumentVersion? @relation("DocumentCurrentVersion", fields: [currentVersionId], references: [id])
+  versions         DocumentVersion[] @relation("DocumentVersions")
+
+  createdByUserId String
+  createdBy       User   @relation("DocumentCreatedBy", fields: [createdByUserId], references: [id])
+
+  version    Int       @default(1) // optimistic concurrency, same pattern as Case/Rule/Scheme
+  createdAt  DateTime  @default(now())
+  archivedAt DateTime?
+
+  extractedFields ExtractedField[]
+
+  @@index([caseId])
+  @@index([status])
+}
+
+// Immutable once created. Replacing a Document creates a new DocumentVersion
+// via replacesVersionId — the previous version's fields are never mutated.
+model DocumentVersion {
+  id            String     @id @default(uuid())
+  documentId    String
+  document      Document   @relation("DocumentVersions", fields: [documentId], references: [id])
+  versionNumber Int // 1,2,3... per document, immutable once assigned
+  sourceFileId  String
+  sourceFile    SourceFile @relation(fields: [sourceFileId], references: [id])
+
+  readabilityStatus        ReadabilityStatus    @default(readable)
+  classificationStatus     ClassificationStatus @default(pending)
+  confirmedTypeCode        String?
+  classificationConfidence Float? // never set this phase — reserved for Segment 6
+
+  replacesVersionId String?            @unique
+  replacesVersion   DocumentVersion?   @relation("VersionReplaces", fields: [replacesVersionId], references: [id])
+  replacedBy        DocumentVersion?   @relation("VersionReplaces")
+  replacementReason ReplacementReason?
+
+  createdByUserId String
+  createdBy       User     @relation("DocumentVersionCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  currentForDocument Document?               @relation("DocumentCurrentVersion")
+  pageReferences     DocumentPageReference[]
+
+  classificationResults DocumentClassificationResult[]
+  ocrPageResults        OcrPageResult[]
+  extractedFields       ExtractedField[]
+  processingJobs        DocumentProcessingJob[]
+
+  @@unique([documentId, versionNumber])
+  @@index([documentId])
+  @@index([sourceFileId])
+}
+
+// Real page provenance. Populated 1:1 with source pages this phase (one
+// SourceFile always produces exactly one Document, no AI split-detector
+// exists yet) — structurally ready for future splitting/merging without a
+// schema change, per spec §15.
+model DocumentPageReference {
+  id                 String          @id @default(uuid())
+  documentVersionId  String
+  documentVersion    DocumentVersion @relation(fields: [documentVersionId], references: [id])
+  sourceFileId       String
+  sourceFile         SourceFile      @relation(fields: [sourceFileId], references: [id])
+  sourcePageNumber   Int
+  documentPageNumber Int
+  rotation           Int     @default(0) // 0/90/180/270, validated in the app layer
+  included           Boolean @default(true)
+
+  @@unique([documentVersionId, documentPageNumber])
+  @@index([documentVersionId])
+  @@index([sourceFileId])
+}
+
+// ============================================================================
+// Segment 6 — AI Extraction and Classification models.
+// ============================================================================
+
+// Pinned to a DocumentTypeDefinition, which is itself already pinned to a
+// ValidationSchemeVersion — a field's definition is transitively frozen to
+// the exact Scheme version it was configured under, the same
+// historical-immutability precedent DocumentTypeDefinition itself
+// established for the Scheme it hangs off (Segment 5 spec §3).
+model ExtractionFieldDefinition {
+  id             String                 @id @default(uuid())
+  documentTypeId String
+  documentType   DocumentTypeDefinition @relation(fields: [documentTypeId], references: [id])
+
+  code                   String // stable identifier, e.g. "examination_date" — matches an entry in the parent DocumentTypeDefinition.expectedFields list
+  label                  String
+  valueType              ExtractionValueType
+  required               Boolean             @default(false)
+  repeatable             Boolean             @default(false)
+  normalization          Json                @default("{}") // inert this phase — date/money/name normalization hints for the future normalizer
+  extractionHints        Json                @default("[]") // inert this phase — the future classifier/extractor consumes it
+  validationDependencies Json                @default("[]") // Rule ids/codes this field feeds — inert until Segment 7's dependency-invalidation exists
+  sensitive              Boolean             @default(false) // high-risk/PII flag — feeds spec §23's "high-risk fields always require confirmation"
+  displayOrder           Int                 @default(0)
+  createdAt              DateTime            @default(now())
+
+  extractedFields ExtractedField[]
+
+  @@unique([documentTypeId, code])
+  @@index([documentTypeId])
+}
+
+// Append-only history of every classification attempt.
+// DocumentVersion.classificationStatus/confirmedTypeCode/
+// classificationConfidence (Segment 5) remain the live/current state; this
+// table is the audit trail behind them — the same "current pointer vs.
+// append-only history" split already used for ValidationRule.currentVersionId
+// vs. ValidationRuleVersion rows.
+model DocumentClassificationResult {
+  id                String          @id @default(uuid())
+  documentVersionId String
+  documentVersion   DocumentVersion @relation(fields: [documentVersionId], references: [id])
+
+  suggestedTypeCode  String?
+  candidateTypes     Json                 @default("[]") // ClassificationCandidate[] — {documentTypeCode, confidence, evidenceReferences}[]
+  confidence         Float?
+  evidenceReferences Json                 @default("[]") // EvidenceReference[] — PII-adjacent, never logged/audited (spec §12/§30)
+  method             ClassificationMethod
+  classifierName     String?
+  classifierVersion  String?
+  createdAt          DateTime             @default(now())
+
+  @@index([documentVersionId])
+}
+
+// Per-page OCR output, one row per page per Document Version.
+model OcrPageResult {
+  id                String          @id @default(uuid())
+  documentVersionId String
+  documentVersion   DocumentVersion @relation(fields: [documentVersionId], references: [id])
+
+  pageNumber       Int
+  text             String // OCR/embedded text — PII, never logged (spec §30)
+  language         String?
+  confidence       Float?
+  blocks           Json     @default("[]") // OcrBlock[] — {text, confidence, boundingBox, blockType}[]
+  ocrEngine        String?
+  ocrEngineVersion String?
+  createdAt        DateTime @default(now())
+
+  @@unique([documentVersionId, pageNumber])
+  @@index([documentVersionId])
+}
+
+// One row per (Document Version, field definition) pair — "extract each
+// field once per Document Version" (spec §1/§11).
+model ExtractedField {
+  id                String                    @id @default(uuid())
+  caseId            String
+  case              Case                      @relation(fields: [caseId], references: [id])
+  documentId        String
+  document          Document                  @relation(fields: [documentId], references: [id])
+  documentVersionId String
+  documentVersion   DocumentVersion           @relation(fields: [documentVersionId], references: [id])
+  fieldDefinitionId String
+  fieldDefinition   ExtractionFieldDefinition @relation(fields: [fieldDefinitionId], references: [id])
+
+  rawValue           String? // literal extracted text — never overwritten after correction (spec §1/§17)
+  normalizedValue    Json?   // canonical form per valueType — money as {minorUnits, currency}, dates as {iso, ambiguous}, etc.; Json (not a bare string) because spec §14 explicitly forbids naive float/string encoding for money
+  valueType          ExtractionValueType
+  status             ExtractionStatus    @default(extracted)
+  confidence         Float?
+  extractionMethod   ExtractionMethod
+  evidenceReferences Json                @default("[]") // EvidenceReference[] — PII, never logged/audited
+  candidates         Json                @default("[]") // ExtractionCandidate[] — preserved when status="inconsistent" (spec §13), never silently collapsed to one
+  extractorName      String?
+  extractorVersion   String?
+
+  confirmedValue    Json?
+  confirmedByUserId String?
+  confirmedBy       User?     @relation("ExtractedFieldConfirmedBy", fields: [confirmedByUserId], references: [id])
+  confirmedAt       DateTime?
+  correctionReason  String? // spec §17: "corrections preserve... reason where required"
+
+  createdAt DateTime @default(now())
+
+  @@unique([documentVersionId, fieldDefinitionId])
+  @@index([caseId])
+  @@index([documentId])
+  @@index([documentVersionId])
+  @@index([fieldDefinitionId])
+}
+
+// Status/idempotency tracking for the (still-synchronous-for-now) processing
+// pipeline — matching how Segment 5's upload pipeline runs synchronously
+// today with the schema shaped for async later.
+model DocumentProcessingJob {
+  id                String          @id @default(uuid())
+  documentVersionId String
+  documentVersion   DocumentVersion @relation(fields: [documentVersionId], references: [id])
+
+  task             ProcessingJobTask
+  status           ProcessingJobStatus @default(queued)
+  attempt          Int                 @default(1)
+  inputVersionHash String // hash of the exact inputs that produced this job — the dedup key alongside (documentVersionId, task)
+  processor        String? // e.g. "internal", "openai", "anthropic" — null until a real processor is wired
+  processorVersion String?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  errorCode        String?
+  createdAt        DateTime            @default(now())
+
+  @@unique([documentVersionId, task, inputVersionHash]) // "do not create duplicate active jobs for the same task and input hash" (spec §28)
+  @@index([documentVersionId])
+  @@index([status])
+}

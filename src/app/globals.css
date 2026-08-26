@@ -1,0 +1,133 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  /* Clinical SaaS palette: #853728 brand / #F7F8F8 background / #0B0D0E text.
+     Brand color is reserved for key actions, active states, and highlights —
+     never used decoratively across large surfaces. */
+  --background: #f7f8f8;
+  --foreground: #0b0d0e;
+  --card: #ffffff;
+  --card-foreground: #0b0d0e;
+  --popover: #ffffff;
+  --popover-foreground: #0b0d0e;
+  --primary: #853728;
+  --primary-foreground: #ffffff;
+  --secondary: #eef0f0;
+  --secondary-foreground: #0b0d0e;
+  --muted: #eef0f0;
+  --muted-foreground: #5b6266;
+  --accent: #f3e6e3;
+  --accent-foreground: #0b0d0e;
+  --destructive: #dc2626;
+  --border: #e2e4e4;
+  --input: #e2e4e4;
+  --ring: #853728;
+  --chart-1: #853728;
+  --chart-2: #5b6266;
+  --chart-3: #0b0d0e;
+  --chart-4: #a8493a;
+  --chart-5: #cbced0;
+  --radius: 0.5rem;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #0b0d0e;
+  --sidebar-primary: #853728;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f3e6e3;
+  --sidebar-accent-foreground: #0b0d0e;
+  --sidebar-border: #e2e4e4;
+  --sidebar-ring: #853728;
+}
+
+.dark {
+  --background: #0b0d0e;
+  --foreground: #f7f8f8;
+  --card: #17191a;
+  --card-foreground: #f7f8f8;
+  --popover: #17191a;
+  --popover-foreground: #f7f8f8;
+  --primary: #a8493a;
+  --primary-foreground: #ffffff;
+  --secondary: #202324;
+  --secondary-foreground: #f7f8f8;
+  --muted: #202324;
+  --muted-foreground: #9aa0a3;
+  --accent: #2e211f;
+  --accent-foreground: #f7f8f8;
+  --destructive: #ef4444;
+  --border: #2a2d2e;
+  --input: #2a2d2e;
+  --ring: #a8493a;
+  --chart-1: #a8493a;
+  --chart-2: #9aa0a3;
+  --chart-3: #f7f8f8;
+  --chart-4: #853728;
+  --chart-5: #4a4e50;
+  --sidebar: #17191a;
+  --sidebar-foreground: #f7f8f8;
+  --sidebar-primary: #a8493a;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #2e211f;
+  --sidebar-accent-foreground: #f7f8f8;
+  --sidebar-border: #2a2d2e;
+  --sidebar-ring: #a8493a;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
