@@ -9,12 +9,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge } from "@/components/status-badge";
 import { DocumentDetails } from "@/components/provider/document-details";
+import { ValidationPanel } from "@/components/validation-panel";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 interface CaseRow {
   id: string;
   internalReference: string;
   status: string;
+  version: number;
   clientId: string | null;
   patientReference: string | null;
   serviceType: string | null;
@@ -205,6 +207,8 @@ export function CaseDetail({ caseId }: { caseId: string }) {
           </dl>
         </CardContent>
       </Card>
+
+      <ValidationPanel caseId={caseId} caseVersion={caseRow.version} />
 
       <Card>
         <CardHeader>

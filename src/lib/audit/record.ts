@@ -73,7 +73,21 @@ export type AuditEventType =
   | "extracted_field_corrected"
   | "extracted_field_marked_absent"
   | "document_processing_retried"
-  | "document_processing_failed";
+  | "document_processing_failed"
+  // Segment 7 — Validation Process and Results.
+  | "validation_started"
+  | "validation_completed"
+  | "validation_partially_completed"
+  | "validation_failed"
+  | "validation_superseded"
+  | "rule_executed"
+  | "rule_result_reused"
+  | "provider_action_requested"
+  | "client_review_requested"
+  | "hitl_started"
+  | "hitl_resolved"
+  | "hitl_overridden"
+  | "revalidation_started";
 
 export interface AuditEventInput {
   eventType: AuditEventType;

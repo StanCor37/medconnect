@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.121.0",
     "@base-ui/react": "^1.7.0",
     "@napi-rs/canvas": "^1.0.8",
     "@prisma/adapter-pg": "^7.10.0",

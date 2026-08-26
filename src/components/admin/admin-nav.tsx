@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, ShieldCheck, ListChecks } from "lucide-react";
+import { Home, ShieldCheck, ListChecks, FileText, ClipboardCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
   { href: "/admin/overview", label: "Overview", icon: Home },
+  { href: "/admin/cases", label: "Cases", icon: FileText },
+  { href: "/admin/hitl", label: "HITL", icon: ClipboardCheck },
   { href: "/admin/rules", label: "Rules", icon: ShieldCheck },
   { href: "/admin/schemes", label: "Schemes", icon: ListChecks },
 ];

@@ -35,6 +35,10 @@ export type Action =
   | "case.restore"
   | "case.delete"
   | "case.assignScheme"
+  | "case.validate"
+  | "case.requestRevalidation"
+  | "hitl.view"
+  | "hitl.decide"
   | "rule.create"
   | "rule.view"
   | "rule.update"
@@ -70,7 +74,7 @@ export type Action =
  * layer (RLS or otherwise) it cannot actually observe from a pure function.
  */
 export interface ResourceRef {
-  type: "User" | "Provider" | "Client" | "ProviderClientRelationship" | "Case" | "ValidationRule" | "ValidationScheme";
+  type: "User" | "Provider" | "Client" | "ProviderClientRelationship" | "Case" | "ValidationRule" | "ValidationScheme" | "HitlTask";
   id?: string;
   providerId?: string | null;
   clientId?: string | null;
@@ -167,6 +171,23 @@ const policies: Record<Action, Policy> = {
   "case.restore": caseMutationPolicy,
   "case.delete": caseMutationPolicy,
   "case.assignScheme": caseMutationPolicy,
+  // Provider-only, matches spec Segment 7 §4 "Provider Users may validate."
+  "case.validate": caseMutationPolicy,
+  // Client Admin only — ownership already established by the scoped fetch
+  // that loaded this Case (same reasoning as case.view's redundant check).
+  "case.requestRevalidation": (ctx) => (ctx.role === "client_admin" ? allow() : deny(403)),
+
+  // --- HITL tasks (Segment 7) ---
+  // Provider User: read-only (spec §15 "inspect evidence", never decide).
+  // Client Admin: must own the task's assignedClientId — re-checked here in
+  // addition to scopedHitlTaskWhere's own active-relationship join, same
+  // defense-in-depth relationship every other resource type gets.
+  "hitl.view": (ctx, res) => {
+    if (ctx.role === "super_admin") return deny(404);
+    if (ctx.role === "client_admin") return res.clientId === ctx.clientId ? allow() : deny(404);
+    return allow();
+  },
+  "hitl.decide": (ctx, res) => (ctx.role === "client_admin" && res.clientId === ctx.clientId ? allow() : deny(404)),
 
   // --- Validation Rules ---
   "rule.create": (ctx) => (adminRoles.includes(ctx.role) ? allow() : deny()),

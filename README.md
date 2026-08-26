@@ -5,11 +5,15 @@ invitations, account lifecycle), Segment 4 (Case creation and ownership),
 Segment 3's catalog-management half (Validation Rules and Schemes — CRUD,
 versioning, ownership, duplicate detection, promotion), Segment 5's
 foundation half (Document upload, versioning, storage, and authorization),
-and Segment 6's data model plus its deterministic pipeline (embedded PDF
+Segment 6's data model plus its deterministic pipeline (embedded PDF
 text extraction, filename/content-keyword classification, regex-based field
-extraction and normalization) **and real OCR via a native Tesseract binary**
-(specialized/generative-model classification and extraction are the only
-pieces still deferred) of the spec in `Prompt/` are built. See
+extraction and normalization) **and real OCR via a native Tesseract binary**,
+and Segment 7 (Validation Process and Results — the engine that actually runs
+a Case's pinned Validation Scheme, deterministic rules before **real
+Claude-API-backed AI-assisted rules**, computes a deterministic overall
+result, and routes Client HITL review) of the spec in `Prompt/` are built.
+(Segment 6's specialized/generative-model classification and extraction are
+still deferred — see Segment 6's section below.) See
 `Prompt/` for the full 12-segment product spec and
 `C:\Users\stani\.claude\plans\melodic-conjuring-wand.md` for the
 implementation plan each phase followed.
@@ -31,6 +35,9 @@ implementation plan each phase followed.
   PaddleOCR-based Python microservice was tried first and abandoned, and why
   the initial in-process `tesseract.js` (WASM) replacement was itself later
   swapped for the real native binary.
+- `@anthropic-ai/sdk` (real Claude API calls, forced tool-use for structured
+  output) for Segment 7's AI-assisted Rule evaluation — see Segment 7's
+  section below.
 
 ## Setup
 
@@ -45,12 +52,22 @@ implementation plan each phase followed.
    a fresh terminal (not one open before the install) is usually needed for
    `PATH` to pick it up — the fallback path exists precisely so a
    long-running `next dev` process started before the install still works.
-3. `npm install`
-4. `npx prisma generate`
-5. `npx prisma migrate deploy` (applies `prisma/migrations/*`, including the
-   RLS policies appended to the init migration — see `prisma/rls.sql` for the
-   maintained source of the policy SQL).
-6. `npx tsx prisma/seed.ts` — creates a fixture set: 1 Super Admin, 2 Clients,
+3. Get an Anthropic API key at <https://console.anthropic.com/> and set
+   `ANTHROPIC_API_KEY` in `.env` — required for Segment 7's AI-assisted Rule
+   evaluation to actually call Claude; without it, `ai_assisted` rules
+   degrade gracefully to a `processing_error` result (never a false `fail`)
+   rather than failing to start a validation run at all. Optional overrides:
+   `ANTHROPIC_MODEL` (default `claude-sonnet-5`), `AI_RULE_CALL_BUDGET`
+   (default `5`), `AI_LOW_CONFIDENCE_HITL_THRESHOLD` (default `0.6`).
+4. `npm install`
+5. `npx prisma generate`
+6. `npx prisma migrate deploy` (applies `prisma/migrations/*`; the init
+   migration has the foundation RLS policies appended directly — see
+   `prisma/rls.sql` for the maintained source of the policy SQL, including
+   Segment 7's, which was applied directly to both the dev and test
+   databases rather than re-appended into an already-applied migration file
+   — see Segment 7's section below for why).
+7. `npx tsx prisma/seed.ts` — creates a fixture set: 1 Super Admin, 2 Clients,
    3 Providers across standalone/connected/pending states, one account of
    each status (invited/active/suspended/deactivated), and a realistic
    Segment 3/5/6 scenario — Client "CORIS Assistance d.o.o.", 12 global
@@ -61,8 +78,8 @@ implementation plan each phase followed.
    `ExtractionFieldDefinition` rows on `invoice` with deterministic regex
    extraction hints, and one published Scheme ("Dunav TA — CORIS") mixing all
    of it. Credentials are printed to the console when the script runs.
-7. `npm run dev`
-8. `npm test` — runs the automated suite (see "Known limitations" below for
+8. `npm run dev`
+9. `npm test` — runs the automated suite (see "Known limitations" below for
    how it's isolated from your dev/seed data).
 
 ## Known limitations / pre-production TODOs
@@ -218,15 +235,17 @@ implementation plan each phase followed.
 
 ## What has NOT been built yet
 
-**Validation Rule and Scheme execution** (compiled validation plans, AI model
-routing, extraction-result caching, HITL task creation and review,
-recommendation templates, token budgets — spec §12–24), the full Case status
-lifecycle (Segment 8 — this phase only ever transitions `draft ↔ archived`),
-Notifications, and Admin analytics (Segments 7–12) are intentionally out of
-scope. Segments 3, 5, and 6 are each only partially built, for the same
-reason: the catalog/data-model portion of each (spec §1–11 for Segment 3;
-data model, storage, authorization, and versioning for Segment 5) is done,
-but Rule/Scheme *validation execution* (Segment 7) still doesn't exist.
+**Validation Rule and Scheme execution now exists** (Segment 7 — see its own
+section below for the full picture: the engine, real Claude-backed
+AI-assisted rules, HITL, and what's deliberately deferred within it). Still
+genuinely out of scope: the full Case status lifecycle (Segment 8 — this
+phase only ever transitions `draft ↔ archived`; Segment 7 never writes
+`Case.status`, by design), Notifications (Segment 10), and Admin analytics
+(Segment 9). Segments 3, 5, and 6 are each only partially built, for the same
+reason as before: the catalog/data-model portion of each (spec §1–11 for
+Segment 3; data model, storage, authorization, and versioning for Segment 5)
+is done, but Segment 6's AI-based classification/extraction (as opposed to
+Segment 7's AI-based *rule evaluation*, which is built) still doesn't exist.
 
 **Segment 6 now has a real deterministic pipeline, wired into upload,
 replace, and confirm-type** (`src/lib/processing/` — `pdfText.ts`,
@@ -320,15 +339,15 @@ upload/confirm — noticeably more so now that OCR adds real latency;
 `DocumentProcessingJob` rows track status/idempotency but nothing dequeues
 them).
 
-Rule/Scheme execution needs Document (Segment 5) + AI extraction (Segment 6,
-still needs the AI-provider decision for the non-deterministic remainder) +
-Validation Run (Segment 7). The three standalone, fully-testable pieces
-already built ahead of their full execution engines are
-`evaluateDeterministicRule` (`src/lib/rules/evaluateDeterministicRule.ts`,
-Segment 3), the magic-byte/page-count/readability checks in
-`src/lib/documents/` (Segment 5), and now `src/lib/processing/` (Segment
-6's deterministic half) — all pure/side-effect-free-where-possible, proven
-by their own tests. Segment 5 also does not build: a real preview/
+Rule/Scheme *execution* is built now (Segment 7 — see its own section
+below). `evaluateDeterministicRule` (`src/lib/rules/evaluateDeterministicRule.ts`,
+built in Segment 3 as a standalone, fully-testable, side-effect-free piece
+ahead of any real caller) is what Segment 7's deterministic phase actually
+calls against real Case data — proving out that "build the pure function
+before its execution engine exists" pattern the same way the magic-byte/
+page-count/readability checks in `src/lib/documents/` (Segment 5) and
+`src/lib/processing/` (Segment 6's deterministic half) did before them.
+Segment 5 also does not build: a real preview/
 thumbnail generation for the viewer (needs HEIC/TIFF→web conversion, no
 `sharp` installed — Segment 12 owns the actual viewer UI anyway), multi-document
 splitting of one scan into several logical Documents (schema-ready via
@@ -337,8 +356,9 @@ splitting of one scan into several logical Documents (schema-ready via
 configurable upload limits (needs an admin-config surface — Segment 9), or
 the Client document-request workflow (spec §23 — needs a "Provider task"
 concept that doesn't exist).
-`src/app/api/{validation,notifications,analytics}/` plus the matching
-`src/lib/` folders exist but are empty.
+`src/app/api/{notifications,analytics}/` plus the matching `src/lib/`
+folders exist but are empty (Segments 9/10 — see Segment 7's own "Deferred"
+list below for what its own spec sections left out for the same reason).
 
 **Fixed bug (previously tracked as a follow-up task)**: after starting a new
 draft version of a published Rule or Scheme
@@ -368,6 +388,145 @@ a future (not-yet-current) draft possible — would have prematurely leaked
 that unpublished draft's name into the Rule's live display name before it
 was ever published; it now only mirrors the name when the edited version is
 actually the current one.
+
+## Segment 7 — Validation Process and Results (with real Claude AI-assisted rules)
+
+The single biggest gap in the app before this phase: nothing anywhere
+actually ran a Rule against a real Case. `evaluateDeterministicRule.ts` was a
+pure, tested function with zero callers. This phase builds the real
+execution engine (`src/lib/validation/engine/`), five new tables
+(`ValidationRun`, `ValidationRuleResult`, `RequirementResult`, `HitlTask`,
+`HitlDecision`), and — per explicit user direction to build this for real
+rather than defer it — genuine Claude-API-backed evaluation for
+`ai_assisted` Rules (`src/lib/ai/claudeAiRuleEvaluator.ts`), the first AI
+integration anywhere in this codebase.
+
+**Architectural tradeoff, stated up front**: like OCR, AI calls run
+synchronously inside the same request/DB transaction as the rest of
+validation — this project has no async job-dispatch precedent
+(`DocumentProcessingJob` tracks idempotency, not queuing). A run can call
+Claude up to `AI_RULE_CALL_BUDGET` (default 5) times, each with its own
+20s timeout, so a transaction can stay open for tens of seconds in the
+worst case. If this becomes a real bottleneck, `DocumentProcessingJob` is
+the natural upgrade path; building async dispatch was out of scope here.
+
+**The engine** (`resolvedInput.ts`, `requirements.ts`,
+`applicabilityGate.ts`, `deterministicPhase.ts`, `aiPhase.ts`,
+`overallResult.ts`, `recommendations.ts`, `service.ts`) implements spec §6's
+12-step pipeline: builds a resolved-input snapshot from confirmed
+Documents/ExtractedFields/Case fields (reusing `evaluateDeterministicRule`'s
+own dot-path convention verbatim — `"documents.invoice"`,
+`"fields.invoice.total_cost"`); evaluates Requirement completeness
+separately from Rule outcomes (spec §7 "never use `fail` for missing
+documents, absent fields"); runs deterministic Rules in `executionOrder`
+before any `ai_assisted` Rule's applicability gate — a **pure, no-API-call**
+check — decides whether Claude is even asked; computes the deterministic
+`overall_validation_result` via a priority ladder that is its own concrete
+design decision (the spec defines each value but not their relative
+priority) and is directly unit-tested with zero DB involvement; creates a
+`HitlTask` only for Client-connected Cases with an **active** relationship
+(checked both at creation and, via `scopedHitlTaskWhere`, again at every
+later access — a relationship that goes inactive after the task exists
+makes it invisible/undecidable again, not just un-creatable).
+
+**The `AiRuleOutput` contract** (`src/lib/validation/aiRuleOutput.ts`) is
+deliberately tiny — `{outcome, confidence, evidence[]}`, no free-text
+reasoning field at all — obtained via Anthropic's forced tool-use
+(`tool_choice: {type: "tool", ...}`), never hoped-for JSON in a text
+response. `reasonCode` on the stored result is derived server-side from
+`outcome` alone, never trusted from the model; every `evidence[]` reference
+is cross-checked against the Case's own real Document set and any
+hallucinated id is dropped before persisting. No raw prompt or model text is
+ever stored anywhere (spec §13/§29) — this is true by construction, not by
+redaction after the fact.
+
+**Revalidation and caching**: an explicit trigger (`provider_started`,
+`provider_revalidated`, `client_requested_revalidation`) always creates a
+new immutable `ValidationRun`, but a per-rule `inputSubsetHash` (hash of
+only the field paths that specific rule's own definition/gate touches —
+deliberately not a full `ValidationDependency` graph, see "Deferred" below)
+is compared against the prior completed run's row for the same
+`ruleVersionId` *before* the AI phase would call Claude — a genuine
+skip-before-calling check, not a reuse-after-the-fact one, which is what
+actually makes "never duplicate AI cost for identical inputs" true. A prior
+run's rows are never mutated on supersession — only a `superseded` boolean
+flips; `outcome`/`reasonCode`/`confidence` stay byte-identical forever
+(spec §2 "preserve completed Validation Runs immutably").
+
+**HITL decisions** (`src/lib/hitl/`) are a parallel `HitlDecision` row next
+to the automated `ValidationRuleResult` they respond to — the automated
+outcome column is never touched by a decision, satisfying spec §15/§19's
+"automated and human outcomes remain separate" structurally. Every override
+(`override_to_pass`/`override_to_fail`) requires a non-empty reason,
+enforced twice (Zod at the route, and again inside the service itself as
+defense-in-depth for any future direct caller). `HitlTask` gets the same
+`version`-based optimistic concurrency every other mutable entity in this
+codebase has, even though the spec's own type sketch omits it.
+
+**New authorization**: `case.validate` (provider-only, reuses
+`caseMutationPolicy`), `case.requestRevalidation` (Client Admin only),
+`hitl.view`/`hitl.decide` (Client Admin must own the task's
+`assignedClientId`; Provider gets read-only). `scopedHitlTaskWhere`
+(`src/lib/hitl/scoping.ts`) mirrors `scopedCaseWhere` exactly, joined
+through the parent Case.
+
+**UI**: the Provider's Case detail page gets a "Validate"/"Revalidate"
+button and a results panel grouped exactly per spec §12's 8 groups (never a
+raw dump) — `src/components/validation-panel.tsx` (moved out of
+`components/provider/` since Client Admin reuses the identical component via
+a `variant="client"` prop that swaps the trigger to "Request Revalidation"
+and posts to the Client-only endpoint instead). Client Admin also gets a
+genuinely new, previously-empty `/admin/cases` area (list + **read-only**
+detail — spec §17 grants view/HITL-decide/request-revalidation, never
+upload/confirm-type/edit, which stay exclusively the Provider's) and
+`/admin/hitl`, a decision inbox for the 5 `HitlDecisionType`s.
+
+### Deferred within Segment 7 (with justification)
+
+- **`ValidationDependency` / a real dependency graph (§21)** — replaced by
+  the per-rule `inputSubsetHash` described above, which gives the same
+  externally-observable "only affected rules rerun" behavior without a
+  graph or a new rule-authoring UI for declaring dependencies.
+- **`ValidationResultSnapshot` / PDF export (§23)** — no export/report
+  feature exists anywhere in the app yet to consume it.
+- **A literal `ValidationResultCacheKey` table (§25)** — the reuse behavior
+  is implemented directly via `inputSubsetHash` + `ruleVersionId`
+  comparison; a separate cache-key table would add nothing at this scale.
+- **Notifications (§28) and usage/quality metrics (§30)** — Segments 10/9
+  don't exist yet; nowhere to send a notification, no analytics surface to
+  feed. The schema captures everything a future version of either would
+  need without a further migration.
+- **Full conflict detection (§20)** — needs Scheme-level rule precedence
+  config that doesn't exist (`ValidationSchemeRule` has no priority field) —
+  a Scheme-authoring feature (Segment 3), not engine work.
+- **`automatic_after_upload`/`automatic_after_confirmation`/`system_retry`
+  triggers** — enum values reserved (same "define the shape before the
+  wiring exists" precedent as unused `CaseStatus` values), not yet called
+  from `uploadDocumentsService`/`confirmDocumentTypeService`.
+- **A per-Rule configurable confidence threshold** — implemented instead as
+  one env var (`AI_LOW_CONFIDENCE_HITL_THRESHOLD`) applied uniformly; a
+  per-`ValidationRuleVersion` column is a cheap, non-breaking follow-up.
+- **`Case.status` is never written** — spec §27 explicitly assigns that
+  mapping to a different segment (Segment 8).
+
+### A real migration-tooling lesson learned mid-build
+
+Manually appending Segment 7's RLS `CREATE POLICY` SQL directly into its own
+already-*applied* migration file (to keep the per-migration history
+self-contained, matching how Segments 5/6 embedded their own RLS alongside
+their schema DDL) broke Prisma's own checksum verification on the next
+`prisma migrate dev` call — it detected the file no longer byte-matched what
+it had recorded as applied, and offered `migrate reset` (which would have
+dropped the whole dev database) as the only interactive way forward. No data
+was lost: the fix was reverting that file to its original applied content,
+confirming via `prisma migrate status` that the actual database schema was
+never out of sync (only the file's bookkeeping checksum was), then
+correcting the stored checksum directly to match. Segment 7's RLS policies
+are real and applied to both the dev and test databases (see `prisma/rls.sql`
+for the source), just not re-embedded into that specific migration file
+after the fact — a smaller, deliberate deviation from the established
+per-migration-RLS-embedding convention, made once the risk of the
+alternative became concrete rather than theoretical.
 
 Also out of scope for this phase specifically (Segment 4 items explicitly
 deferred per the spec's own guidance): Client-side Case creation (Client Admin
@@ -573,3 +732,50 @@ structure (a real xref table, standard Helvetica text) rather than real
 personal documents, since the real sample files contain identifying
 information (names, passport numbers, a diagnosis) not appropriate to commit
 into the repo's test fixtures.
+
+## Segment 7 (validation engine + real Claude AI rules) — manually verified (live, against the dev database)
+
+Assigned a real published global Scheme (containing one real seeded
+`ai_assisted` Rule, "TA Exclusion — Sexually Transmitted Diseases") to a
+standalone Case via `assign-scheme`, then clicked **Validate** in the actual
+running Provider UI (not just a script). First attempt genuinely failed with
+a live 500 — the long-running dev server process had been started before
+this segment's migration and `prisma generate`, so its cached Prisma Client
+had no idea `ValidationRun`/`HitlTask`/etc. existed (`Cannot read properties
+of undefined (reading 'findMany')`) and the moved `validation-panel.tsx`
+import was resolved from its pre-move path by a stale Turbopack module
+graph. A full dev-server restart (no code change needed) fixed both —
+exactly the "works in tests, breaks against the real long-running server"
+risk this project has hit before (see Segment 6's pdfjs-worker story) and
+the reason this workflow always includes a live check, not just automated
+tests. After the restart: **Validate → 201 Created**, results panel
+correctly showed **"Processing Failed"** with the AI rule listed under
+"Technical issues" — because no real `ANTHROPIC_API_KEY` is configured on
+this machine, the live Claude call genuinely failed
+(`technicalErrorCode: "rule_engine_error"`), and the engine correctly
+recorded that as a technical failure, never as a false rule `fail` — a live,
+unscripted confirmation of spec §7/§24's "technical errors are not insurance
+failures," using the real Anthropic SDK's real error path, not a fake.
+Separately verified the new Client Admin surfaces: `/admin/cases` lists
+shared Cases, `/admin/cases/[id]` renders the identical read-only Case
+view with a **"Request Revalidation"** button (not "Validate" — the
+`variant="client"` swap works), and `/admin/hitl` renders its empty state
+correctly (no HITL task existed in this scenario, since the only Rule
+exercised resolved to a technical error rather than `needs_review`/`fail`).
+
+The full automated suite for this segment
+(`tests/lib/validation/{overallResult,applicabilityGate,engine}.test.ts` —
+35 tests: 2 pure/no-DB files proving the overall-result ladder and
+applicability-gate logic in isolation, plus a DB-backed `engine.test.ts`
+covering pinning, deterministic-before-AI ordering, missing-requirements-
+never-become-rule-failures, a real `FakeAiRuleEvaluator`-driven technical-
+failure case, standalone-never-creates-HITL, full revalidation/caching
+behavior including a genuine before-the-call cache check, HITL decision
+immutability and stale-version rejection, and cross-Client HITL isolation)
+found a real test-isolation bug during development, not a production one:
+several early drafts of these tests shared one Case fixture across tests,
+so one test's cached `ValidationRuleResult` silently changed a later test's
+expected outcome. Fixed by giving every test that isn't specifically about
+revalidation its own dedicated Case — a good reminder that this engine's
+caching is aggressive by design, so tests need explicit isolation the way
+plain CRUD tests don't.

@@ -1170,3 +1170,219 @@ CREATE POLICY processing_job_select_client_admin ON "DocumentProcessingJob" FOR 
         )
     )
   );
+
+-- ============================================================================
+-- Segment 7 — Validation Process and Results.
+--
+-- ValidationRun/ValidationRuleResult/RequirementResult follow
+-- DocumentProcessingJob's shape exactly: joined via caseId (ValidationRun,
+-- ValidationRuleResult, RequirementResult all carry it directly or via
+-- validationRunId), Super Admin gets zero access (same absolute rule as
+-- every Case-linked table), Provider User and Client Admin both get
+-- read-only SELECT — these rows are engine-written, never hand-edited by
+-- either actor. ValidationRun ALSO needs an INSERT/ALL policy since
+-- *triggering* a run (case.validate / case.requestRevalidation) is a real
+-- user action, unlike DocumentProcessingJob which no one ever directly
+-- creates. HitlTask/HitlDecision get their own block below since Client
+-- Admin genuinely modifies them (deciding a HITL task, spec §17/§19).
+-- ============================================================================
+
+ALTER TABLE "ValidationRun" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "ValidationRuleResult" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "RequirementResult" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "HitlTask" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "HitlDecision" ENABLE ROW LEVEL SECURITY;
+
+-- ----------------------------------------------------------------------------
+-- ValidationRun
+-- ----------------------------------------------------------------------------
+
+CREATE POLICY validation_run_select_provider_user ON "ValidationRun" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "ValidationRun"."caseId"
+        AND c."providerId" = NULLIF(current_setting('app.provider_id', true), '')
+        AND (
+          c."providerCaseAccess" = 'provider_shared'
+          OR (c."providerCaseAccess" = 'creator_only' AND c."createdByUserId" = NULLIF(current_setting('app.user_id', true), ''))
+        )
+    )
+  );
+CREATE POLICY validation_run_insert_provider_user ON "ValidationRun" FOR INSERT
+  WITH CHECK (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "ValidationRun"."caseId"
+        AND c."providerId" = NULLIF(current_setting('app.provider_id', true), '')
+    )
+  );
+CREATE POLICY validation_run_select_client_admin ON "ValidationRun" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'client_admin'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "ValidationRun"."caseId"
+        AND c."clientId" = NULLIF(current_setting('app.client_id', true), '')
+        AND EXISTS (
+          SELECT 1 FROM "ProviderClientRelationship" r
+          WHERE r.id = c."providerClientRelationshipId" AND r.status = 'active'
+        )
+    )
+  );
+CREATE POLICY validation_run_insert_client_admin ON "ValidationRun" FOR INSERT
+  WITH CHECK (
+    current_setting('app.role', true) = 'client_admin'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "ValidationRun"."caseId"
+        AND c."clientId" = NULLIF(current_setting('app.client_id', true), '')
+        AND EXISTS (
+          SELECT 1 FROM "ProviderClientRelationship" r
+          WHERE r.id = c."providerClientRelationshipId" AND r.status = 'active'
+        )
+    )
+  );
+
+-- ----------------------------------------------------------------------------
+-- ValidationRuleResult / RequirementResult — engine-written only, read-only
+-- from every actor, same reasoning as DocumentClassificationResult.
+-- ----------------------------------------------------------------------------
+
+CREATE POLICY rule_result_select_provider_user ON "ValidationRuleResult" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "ValidationRuleResult"."caseId"
+        AND c."providerId" = NULLIF(current_setting('app.provider_id', true), '')
+        AND (
+          c."providerCaseAccess" = 'provider_shared'
+          OR (c."providerCaseAccess" = 'creator_only' AND c."createdByUserId" = NULLIF(current_setting('app.user_id', true), ''))
+        )
+    )
+  );
+CREATE POLICY rule_result_select_client_admin ON "ValidationRuleResult" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'client_admin'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "ValidationRuleResult"."caseId"
+        AND c."clientId" = NULLIF(current_setting('app.client_id', true), '')
+        AND EXISTS (
+          SELECT 1 FROM "ProviderClientRelationship" r
+          WHERE r.id = c."providerClientRelationshipId" AND r.status = 'active'
+        )
+    )
+  );
+-- INSERT policies are required alongside SELECT since RLS defaults to
+-- deny-all per command, not just per row — the engine writes these rows
+-- under whichever actor triggered the run.
+CREATE POLICY rule_result_insert_provider_user ON "ValidationRuleResult" FOR INSERT
+  WITH CHECK (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (SELECT 1 FROM "Case" c WHERE c.id = "ValidationRuleResult"."caseId" AND c."providerId" = NULLIF(current_setting('app.provider_id', true), ''))
+  );
+CREATE POLICY rule_result_insert_client_admin ON "ValidationRuleResult" FOR INSERT
+  WITH CHECK (
+    current_setting('app.role', true) = 'client_admin'
+    AND EXISTS (SELECT 1 FROM "Case" c WHERE c.id = "ValidationRuleResult"."caseId" AND c."clientId" = NULLIF(current_setting('app.client_id', true), ''))
+  );
+
+CREATE POLICY requirement_result_select_provider_user ON "RequirementResult" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "RequirementResult"."caseId"
+        AND c."providerId" = NULLIF(current_setting('app.provider_id', true), '')
+        AND (
+          c."providerCaseAccess" = 'provider_shared'
+          OR (c."providerCaseAccess" = 'creator_only' AND c."createdByUserId" = NULLIF(current_setting('app.user_id', true), ''))
+        )
+    )
+  );
+CREATE POLICY requirement_result_select_client_admin ON "RequirementResult" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'client_admin'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "RequirementResult"."caseId"
+        AND c."clientId" = NULLIF(current_setting('app.client_id', true), '')
+        AND EXISTS (
+          SELECT 1 FROM "ProviderClientRelationship" r
+          WHERE r.id = c."providerClientRelationshipId" AND r.status = 'active'
+        )
+    )
+  );
+CREATE POLICY requirement_result_insert_provider_user ON "RequirementResult" FOR INSERT
+  WITH CHECK (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (SELECT 1 FROM "Case" c WHERE c.id = "RequirementResult"."caseId" AND c."providerId" = NULLIF(current_setting('app.provider_id', true), ''))
+  );
+CREATE POLICY requirement_result_insert_client_admin ON "RequirementResult" FOR INSERT
+  WITH CHECK (
+    current_setting('app.role', true) = 'client_admin'
+    AND EXISTS (SELECT 1 FROM "Case" c WHERE c.id = "RequirementResult"."caseId" AND c."clientId" = NULLIF(current_setting('app.client_id', true), ''))
+  );
+
+-- ----------------------------------------------------------------------------
+-- HitlTask / HitlDecision — never created for a standalone Case
+-- (assignedClientId is NOT NULL, enforced at the app layer, never by RLS
+-- alone). Provider User: read-only (spec §15 "inspect evidence", never
+-- decide). Client Admin: full access to tasks assigned to their own Client
+-- with an active relationship — re-checked on every access, not just at
+-- creation, per spec §29 "Client HITL requires... active relationship."
+-- ----------------------------------------------------------------------------
+
+CREATE POLICY hitl_task_select_provider_user ON "HitlTask" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "HitlTask"."caseId"
+        AND c."providerId" = NULLIF(current_setting('app.provider_id', true), '')
+        AND (
+          c."providerCaseAccess" = 'provider_shared'
+          OR (c."providerCaseAccess" = 'creator_only' AND c."createdByUserId" = NULLIF(current_setting('app.user_id', true), ''))
+        )
+    )
+  );
+CREATE POLICY hitl_task_all_client_admin ON "HitlTask" FOR ALL
+  USING (
+    current_setting('app.role', true) = 'client_admin'
+    AND "assignedClientId" = NULLIF(current_setting('app.client_id', true), '')
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "HitlTask"."caseId"
+        AND EXISTS (
+          SELECT 1 FROM "ProviderClientRelationship" r
+          WHERE r.id = c."providerClientRelationshipId" AND r.status = 'active'
+        )
+    )
+  )
+  WITH CHECK (
+    "assignedClientId" = NULLIF(current_setting('app.client_id', true), '')
+  );
+
+CREATE POLICY hitl_decision_select_provider_user ON "HitlDecision" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (
+      SELECT 1 FROM "HitlTask" t JOIN "Case" c ON c.id = t."caseId"
+      WHERE t.id = "HitlDecision"."hitlTaskId"
+        AND c."providerId" = NULLIF(current_setting('app.provider_id', true), '')
+        AND (
+          c."providerCaseAccess" = 'provider_shared'
+          OR (c."providerCaseAccess" = 'creator_only' AND c."createdByUserId" = NULLIF(current_setting('app.user_id', true), ''))
+        )
+    )
+  );
+CREATE POLICY hitl_decision_select_client_admin ON "HitlDecision" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'client_admin'
+    AND EXISTS (
+      SELECT 1 FROM "HitlTask" t WHERE t.id = "HitlDecision"."hitlTaskId"
+        AND t."assignedClientId" = NULLIF(current_setting('app.client_id', true), '')
+    )
+  );
+CREATE POLICY hitl_decision_insert_client_admin ON "HitlDecision" FOR INSERT
+  WITH CHECK (
+    current_setting('app.role', true) = 'client_admin'
+    AND EXISTS (
+      SELECT 1 FROM "HitlTask" t WHERE t.id = "HitlDecision"."hitlTaskId"
+        AND t."assignedClientId" = NULLIF(current_setting('app.client_id', true), '')
+    )
+  );

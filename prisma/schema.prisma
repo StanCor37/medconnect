@@ -164,6 +164,109 @@ enum HitlPolicy {
 }
 
 // ============================================================================
+// Segment 7 — Validation Process and Results.
+// ============================================================================
+
+enum ValidationRunStatus {
+  queued
+  processing
+  waiting_for_provider
+  waiting_for_client_review
+  completed
+  partially_completed
+  failed
+  cancelled
+  superseded
+}
+
+// automatic_after_upload/automatic_after_confirmation/system_retry are
+// reserved (forward-compatible) — nothing fires them yet, same "define the
+// full enum before its trigger exists" precedent as CaseStatus above.
+enum ValidationTrigger {
+  provider_started
+  automatic_after_upload
+  automatic_after_confirmation
+  provider_revalidated
+  client_requested_revalidation
+  system_retry
+}
+
+enum OverallValidationResult {
+  passed
+  passed_with_warnings
+  issues_found
+  needs_provider_action
+  needs_client_review
+  incomplete
+  processing_failed
+}
+
+enum RuleOutcome {
+  pass
+  fail
+  needs_review
+  skipped
+  not_executed
+  processing_error
+}
+
+enum RequirementType {
+  document
+  field
+  readability
+  classification
+  split_confirmation
+}
+
+enum RequirementStatus {
+  satisfied
+  missing
+  unreadable
+  unconfirmed
+  invalid
+}
+
+// Spec Segment 7 Section 14's closed set of application-owned templates —
+// never freeform, never AI-generated.
+enum RecommendationCode {
+  upload_medical_report
+  upload_clearer_invoice
+  confirm_document_type
+  review_patient_name
+  review_event_date
+  confirm_policy_period
+  request_client_review
+  contact_insurer
+}
+
+enum TechnicalErrorCode {
+  rule_engine_error
+  model_timeout
+  invalid_model_output
+  evidence_unavailable
+  dependency_unavailable
+  budget_exceeded
+  processing_job_failed
+}
+
+enum HitlStatus {
+  open
+  in_review
+  waiting_for_provider
+  resolved
+  cancelled
+  superseded
+}
+
+enum HitlDecisionType {
+  confirm
+  override_to_pass
+  override_to_fail
+  request_documents
+  return_to_provider
+}
+
+// ============================================================================
 // Segment 5 — Document Upload and Versioning (data model, storage,
 // authorization, deterministic upload/versioning pipeline only; AI
 // classification, split detection, OCR-based readability, async job
@@ -333,15 +436,19 @@ model User {
   schemesCreated          ValidationScheme[]        @relation("SchemeCreatedBy")
   schemeVersionsPublished ValidationSchemeVersion[] @relation("SchemeVersionPublishedBy")
 
-  sourceFilesUploaded    SourceFile[]      @relation("SourceFileUploadedBy")
-  documentsCreated       Document[]        @relation("DocumentCreatedBy")
-  documentVersionsCreated DocumentVersion[] @relation("DocumentVersionCreatedBy")
-  extractedFieldsConfirmed ExtractedField[] @relation("ExtractedFieldConfirmedBy")
+  sourceFilesUploaded      SourceFile[]      @relation("SourceFileUploadedBy")
+  documentsCreated         Document[]        @relation("DocumentCreatedBy")
+  documentVersionsCreated  DocumentVersion[] @relation("DocumentVersionCreatedBy")
+  extractedFieldsConfirmed ExtractedField[]  @relation("ExtractedFieldConfirmedBy")
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  suspendedAt    DateTime?
-  deactivatedAt  DateTime?
+  validationRunsStarted ValidationRun[] @relation("ValidationRunStartedBy")
+  hitlTasksResolved     HitlTask[]      @relation("HitlTaskResolvedBy")
+  hitlDecisionsDecided  HitlDecision[]  @relation("HitlDecisionDecidedBy")
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  suspendedAt   DateTime?
+  deactivatedAt DateTime?
 
   @@index([role])
   @@index([providerId])
@@ -363,13 +470,15 @@ model Client {
 
   ownedRules   ValidationRule[]   @relation("ClientOwnedRules")
   ownedSchemes ValidationScheme[] @relation("ClientOwnedSchemes")
+
+  hitlTasksAssigned HitlTask[]
 }
 
 model Provider {
-  id                         String        @id @default(uuid())
+  id                         String       @id @default(uuid())
   legalName                  String
   normalizedName             String // lowercased/trimmed/punctuation-stripped, for fuzzy duplicate matching
-  mode                       ProviderMode  @default(standalone)
+  mode                       ProviderMode @default(standalone)
   country                    String
   officialRegistrationNumber String?
   taxId                      String?
@@ -524,8 +633,8 @@ model Case {
   source            CaseSource @default(ui)
   status            CaseStatus @default(draft)
 
-  providerId String
-  provider   Provider @relation(fields: [providerId], references: [id])
+  providerId         String
+  provider           Provider           @relation(fields: [providerId], references: [id])
   // Preserved permanently even if this User is later suspended/deactivated —
   // the Case remains owned by the Provider, never the individual account.
   createdByUserId    String
@@ -544,15 +653,15 @@ model Case {
   // visibility requires BOTH an explicit clientId AND an active relationship
   // (checked at query time, not just relationship existence) — see
   // src/lib/cases/scoping.ts.
-  clientId                      String?
-  client                        Client?                     @relation(fields: [clientId], references: [id])
-  providerClientRelationshipId  String?
-  providerClientRelationship    ProviderClientRelationship? @relation(fields: [providerClientRelationshipId], references: [id])
+  clientId                     String?
+  client                       Client?                     @relation(fields: [clientId], references: [id])
+  providerClientRelationshipId String?
+  providerClientRelationship   ProviderClientRelationship? @relation(fields: [providerClientRelationshipId], references: [id])
   // Real FK now that Segment 3 exists. SetNull matches the AuditEvent.caseId
   // precedent — scheme versions are never actually hard-deleted in practice
   // (immutable/preserved), SetNull is just the defensively-consistent choice.
-  validationSchemeVersionId String?
-  validationSchemeVersion   ValidationSchemeVersion? @relation(fields: [validationSchemeVersionId], references: [id], onDelete: SetNull)
+  validationSchemeVersionId    String?
+  validationSchemeVersion      ValidationSchemeVersion?    @relation(fields: [validationSchemeVersionId], references: [id], onDelete: SetNull)
 
   externalReference       String?
   externalReferenceSource ExternalReferenceSource?
@@ -567,10 +676,13 @@ model Case {
   submittedAt DateTime?
   archivedAt  DateTime?
 
-  auditEvents AuditEvent[]
-  documents       Document[]
-  sourceFiles     SourceFile[]
-  extractedFields ExtractedField[]
+  auditEvents           AuditEvent[]
+  documents             Document[]
+  sourceFiles           SourceFile[]
+  extractedFields       ExtractedField[]
+  validationRuns        ValidationRun[]
+  hitlTasks             HitlTask[]
+  validationRuleResults ValidationRuleResult[]
 
   // NULL is not distinct-safe for standalone Cases (clientId is null for
   // all of them) — src/lib/duplicate-detection/case.ts's app-layer check
@@ -604,8 +716,8 @@ model ValidationRule {
   executionType RuleExecutionType // changing these means "create a new Rule", not an edit
   name          String // mirrored from currentVersion.name by the service layer whenever it changes
 
-  status           PublicationStatus @default(draft)
-  currentVersionId String?           @unique
+  status           PublicationStatus       @default(draft)
+  currentVersionId String?                 @unique
   currentVersion   ValidationRuleVersion?  @relation("RuleCurrentVersion", fields: [currentVersionId], references: [id])
   versions         ValidationRuleVersion[] @relation("RuleVersions")
 
@@ -667,6 +779,7 @@ model ValidationRuleVersion {
   currentForRule      ValidationRule?        @relation("RuleCurrentVersion")
   promotedAsSourceFor ValidationRule[]       @relation("PromotionSourceVersion")
   schemeRules         ValidationSchemeRule[]
+  ruleResults         ValidationRuleResult[]
 
   @@unique([ruleId, versionNumber])
   @@index([ruleId])
@@ -687,8 +800,8 @@ model ValidationScheme {
   productId    String?
   countryCodes String[] @default([])
 
-  status           PublicationStatus @default(draft)
-  currentVersionId String?           @unique
+  status           PublicationStatus         @default(draft)
+  currentVersionId String?                   @unique
   currentVersion   ValidationSchemeVersion?  @relation("SchemeCurrentVersion", fields: [currentVersionId], references: [id])
   versions         ValidationSchemeVersion[] @relation("SchemeVersions")
 
@@ -720,6 +833,7 @@ model ValidationSchemeVersion {
   schemeRules             ValidationSchemeRule[]
   casesAssigned           Case[]
   documentTypeDefinitions DocumentTypeDefinition[]
+  validationRuns          ValidationRun[]
 
   @@unique([schemeId, versionNumber])
   @@index([schemeId])
@@ -742,6 +856,8 @@ model ValidationSchemeRule {
   required           Boolean     @default(true)
   hitlPolicyOverride HitlPolicy?
   createdAt          DateTime    @default(now())
+
+  ruleResults ValidationRuleResult[]
 
   @@unique([schemeVersionId, ruleVersionId])
   @@index([schemeVersionId])
@@ -816,13 +932,13 @@ model SourceFile {
 // The logical document — identity/status/current-version pointer only. The
 // versioned content lives on DocumentVersion, never duplicated here.
 model Document {
-  id               String           @id @default(uuid())
+  id               String            @id @default(uuid())
   caseId           String
-  case             Case             @relation(fields: [caseId], references: [id])
+  case             Case              @relation(fields: [caseId], references: [id])
   documentTypeCode String? // loose code; see DocumentTypeDefinition's doc comment for why not an FK
-  status           DocumentStatus   @default(needs_type_confirmation)
-  currentVersionId String?          @unique
-  currentVersion   DocumentVersion? @relation("DocumentCurrentVersion", fields: [currentVersionId], references: [id])
+  status           DocumentStatus    @default(needs_type_confirmation)
+  currentVersionId String?           @unique
+  currentVersion   DocumentVersion?  @relation("DocumentCurrentVersion", fields: [currentVersionId], references: [id])
   versions         DocumentVersion[] @relation("DocumentVersions")
 
   createdByUserId String
@@ -887,8 +1003,8 @@ model DocumentPageReference {
   sourceFile         SourceFile      @relation(fields: [sourceFileId], references: [id])
   sourcePageNumber   Int
   documentPageNumber Int
-  rotation           Int     @default(0) // 0/90/180/270, validated in the app layer
-  included           Boolean @default(true)
+  rotation           Int             @default(0) // 0/90/180/270, validated in the app layer
+  included           Boolean         @default(true)
 
   @@unique([documentVersionId, documentPageNumber])
   @@index([documentVersionId])
@@ -921,7 +1037,8 @@ model ExtractionFieldDefinition {
   displayOrder           Int                 @default(0)
   createdAt              DateTime            @default(now())
 
-  extractedFields ExtractedField[]
+  extractedFields    ExtractedField[]
+  requirementResults RequirementResult[]
 
   @@unique([documentTypeId, code])
   @@index([documentTypeId])
@@ -983,7 +1100,7 @@ model ExtractedField {
   fieldDefinition   ExtractionFieldDefinition @relation(fields: [fieldDefinitionId], references: [id])
 
   rawValue           String? // literal extracted text — never overwritten after correction (spec §1/§17)
-  normalizedValue    Json?   // canonical form per valueType — money as {minorUnits, currency}, dates as {iso, ambiguous}, etc.; Json (not a bare string) because spec §14 explicitly forbids naive float/string encoding for money
+  normalizedValue    Json? // canonical form per valueType — money as {minorUnits, currency}, dates as {iso, ambiguous}, etc.; Json (not a bare string) because spec §14 explicitly forbids naive float/string encoding for money
   valueType          ExtractionValueType
   status             ExtractionStatus    @default(extracted)
   confidence         Float?
@@ -1030,4 +1147,201 @@ model DocumentProcessingJob {
   @@unique([documentVersionId, task, inputVersionHash]) // "do not create duplicate active jobs for the same task and input hash" (spec §28)
   @@index([documentVersionId])
   @@index([status])
+}
+
+// ============================================================================
+// Segment 7 — Validation Process and Results.
+//
+// Deferred this phase (see the Segment 7 plan doc for full justification):
+// ValidationDependency/dependency-graph revalidation (replaced by
+// ValidationRuleResult.inputSubsetHash below), ValidationResultSnapshot/PDF
+// export (no consumer exists), a literal ValidationResultCacheKey table
+// (the cached/inputSubsetHash columns below implement the same behavior),
+// notifications and usage/quality metrics (Segments 9/10 don't exist), and
+// full conflict detection (needs Scheme-level rule precedence config that
+// doesn't exist yet). Case.status is never written here — spec §27 assigns
+// that mapping to a different segment.
+// ============================================================================
+
+// One immutable execution against exact pinned input versions. Never
+// modified once completed — see ValidationRuleResult/RequirementResult's
+// own `superseded` flags for how revalidation is represented instead of
+// mutation.
+model ValidationRun {
+  id              String                  @id @default(uuid())
+  caseId          String
+  case            Case                    @relation(fields: [caseId], references: [id])
+  schemeVersionId String
+  schemeVersion   ValidationSchemeVersion @relation(fields: [schemeVersionId], references: [id])
+  runNumber       Int // 1,2,3... per Case, immutable once assigned — same precedent as ValidationRuleVersion.versionNumber
+
+  status        ValidationRunStatus      @default(queued)
+  overallResult OverallValidationResult?
+  trigger       ValidationTrigger
+
+  startedByUserId String?
+  startedBy       User?     @relation("ValidationRunStartedBy", fields: [startedByUserId], references: [id])
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  // Pins exactly what spec §2 requires: Case version, Scheme version (FK
+  // above), and — via the resolved-input hash — every Document
+  // Version/confirmed type/extracted+confirmed value that fed this run.
+  inputSnapshotHash   String
+  compiledPlanVersion Int    @default(1) // bump only if the engine's own compiler logic/shape changes, never on data changes
+  casePinnedVersion   Int // Case.version at start
+
+  // Set iff >=1 ai_assisted rule was attempted this run — never set from a
+  // run with zero AI rules, so "was AI involved" is a plain null-check.
+  aiModelId       String?
+  aiPromptVersion String?
+
+  supersedesValidationRunId String?        @unique
+  supersedes                ValidationRun? @relation("RunSupersession", fields: [supersedesValidationRunId], references: [id])
+  supersededBy              ValidationRun? @relation("RunSupersession")
+
+  version   Int      @default(1) // optimistic concurrency, same pattern as Case/Rule/Scheme
+  createdAt DateTime @default(now())
+
+  ruleResults        ValidationRuleResult[]
+  requirementResults RequirementResult[]
+  hitlTasks          HitlTask[]
+
+  @@unique([caseId, runNumber])
+  @@index([caseId])
+  @@index([schemeVersionId])
+  @@index([status])
+}
+
+// One outcome for one pinned Rule version within one Run. Every automated
+// outcome is preserved permanently — a later HitlDecision never edits any
+// column here, only HitlTask.status changes (see HitlDecision's own comment).
+model ValidationRuleResult {
+  id              String                @id @default(uuid())
+  validationRunId String
+  validationRun   ValidationRun         @relation(fields: [validationRunId], references: [id])
+  caseId          String // denormalized — same precedent as ExtractedField.caseId, avoids a join through validationRun for every Case-scoped query
+  case            Case                  @relation(fields: [caseId], references: [id])
+  ruleVersionId   String
+  ruleVersion     ValidationRuleVersion @relation(fields: [ruleVersionId], references: [id])
+  // The exact ValidationSchemeRule pairing used — pins executionOrder,
+  // per-pairing `parameters` overrides, and hitlPolicyOverride for this run,
+  // exactly as they existed at execution time.
+  schemeRuleId    String?
+  schemeRule      ValidationSchemeRule? @relation(fields: [schemeRuleId], references: [id])
+
+  outcome            RuleOutcome
+  severity           RuleSeverity // snapshotted from the pinned rule version — never re-derived if the live Rule changes later
+  reasonCode         String
+  recommendationCode RecommendationCode?
+  technicalErrorCode TechnicalErrorCode? // set iff outcome = processing_error
+
+  inputReferences    Json   @default("[]") // [{type:"field"|"document", fieldDefinitionId?, documentTypeCode?, documentVersionId?}] — safe identifiers only
+  evidenceReferences Json   @default("[]") // EvidenceReference[] — PII-adjacent, never logged/audited, same precedent as ExtractedField.evidenceReferences
+  confidence         Float?
+  // Hash of only the resolved-input values THIS rule's own declared field
+  // paths (deterministic) or applicabilityGate (ai_assisted) touch — the
+  // selective-revalidation key: a match against the prior completed run's
+  // row for the same ruleVersionId means this result can be reused
+  // (cached=true) without re-executing, without a full dependency graph.
+  inputSubsetHash    String
+
+  executionType          RuleExecutionType
+  executionEngine        String // "deterministic_v1" | "claude_ai_rule_evaluator"
+  executionEngineVersion String
+  startedAt              DateTime?
+  completedAt            DateTime?
+  cached                 Boolean           @default(false)
+  superseded             Boolean           @default(false)
+
+  hitlTask HitlTask?
+
+  @@index([validationRunId])
+  @@index([caseId])
+  @@index([ruleVersionId])
+}
+
+// Completeness, tracked separately from insurance-rule outcomes (spec §9) —
+// a missing medical report is a missing requirement, never a "failed rule".
+model RequirementResult {
+  id                 String                     @id @default(uuid())
+  validationRunId    String
+  validationRun      ValidationRun              @relation(fields: [validationRunId], references: [id])
+  caseId             String
+  requirementType    RequirementType
+  documentTypeCode   String?
+  fieldDefinitionId  String?
+  fieldDefinition    ExtractionFieldDefinition? @relation(fields: [fieldDefinitionId], references: [id])
+  status             RequirementStatus
+  reasonCode         String
+  recommendationCode RecommendationCode?
+  superseded         Boolean                    @default(false)
+
+  @@index([validationRunId])
+  @@index([caseId])
+}
+
+// One review task per rule result that needed human judgment. Never created
+// for a standalone Case (assignedClientId is never null — the service layer
+// simply never constructs one when the Case has no Client) — spec §16/§29's
+// "standalone Cases never create Client HITL" as a structural guarantee, not
+// just an app-layer check.
+model HitlTask {
+  id              String               @id @default(uuid())
+  caseId          String
+  case            Case                 @relation(fields: [caseId], references: [id])
+  validationRunId String
+  validationRun   ValidationRun        @relation(fields: [validationRunId], references: [id])
+  ruleResultId    String               @unique
+  ruleResult      ValidationRuleResult @relation(fields: [ruleResultId], references: [id])
+
+  assignedClientId String
+  assignedClient   Client @relation(fields: [assignedClientId], references: [id])
+
+  status           HitlStatus @default(open)
+  reasonCode       String
+  createdAt        DateTime   @default(now())
+  resolvedAt       DateTime?
+  resolvedByUserId String?
+  resolvedBy       User?      @relation("HitlTaskResolvedBy", fields: [resolvedByUserId], references: [id])
+
+  version Int @default(1) // optimistic concurrency — spec §26 "reject stale updates... require reload"
+
+  // A newer ValidationRun's HitlTask for the "same" underlying issue
+  // supersedes this one (e.g. after revalidation) — old decisions are never
+  // rewritten, only superseded, same immutability shape as ValidationRun.
+  // Same direction/naming convention as ValidationRun.supersedesValidationRunId
+  // above — the FK lives on the NEWER row, pointing back at the older one it
+  // supersedes; `supersededByTask` is the reverse (computed) view from the
+  // older row's side.
+  supersedesHitlTaskId String?   @unique
+  supersedesTask       HitlTask? @relation("HitlSupersession", fields: [supersedesHitlTaskId], references: [id])
+  supersededByTask     HitlTask? @relation("HitlSupersession")
+
+  decisions HitlDecision[]
+
+  @@index([caseId])
+  @@index([validationRunId])
+  @@index([assignedClientId])
+  @@index([status])
+}
+
+// Append-only — a decision is a permanent, separate record layered next to
+// the automated outcome it responds to, never a mutation of it (spec §19:
+// "show automated outcome, human decision, reviewer, timestamp and reason
+// separately"). No `version` column: concurrency is enforced on the parent
+// HitlTask, exactly like AuditEvent needs none.
+model HitlDecision {
+  id               String           @id @default(uuid())
+  hitlTaskId       String
+  hitlTask         HitlTask         @relation(fields: [hitlTaskId], references: [id])
+  automatedOutcome RuleOutcome
+  decision         HitlDecisionType
+  reasonCode       String?
+  reason           String? // free text — app layer requires non-empty for override_to_pass/override_to_fail (spec §19 "every override requires a reason")
+  decidedByUserId  String
+  decidedBy        User             @relation("HitlDecisionDecidedBy", fields: [decidedByUserId], references: [id])
+  decidedAt        DateTime         @default(now())
+
+  @@index([hitlTaskId])
 }
