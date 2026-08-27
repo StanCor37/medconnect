@@ -11,6 +11,11 @@ export const GENERAL_DOCUMENT_TYPES: DocumentTypeOption[] = [
   { code: "invoice", name: "Invoice" },
   { code: "referral", name: "Referral" },
   { code: "passport", name: "Passport" },
+  { code: "policy_coverage", name: "Policy / coverages" },
+  { code: "guarantee_of_payment", name: "Guarantee of Payment (GOP)" },
+  { code: "bank_card", name: "Bank card" },
+  { code: "patient_form", name: "Patient form" },
+  { code: "identity_document", name: "Identity document" },
 ];
 
 /**
