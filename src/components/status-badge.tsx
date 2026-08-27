@@ -39,8 +39,19 @@ const PENDING = new Set([
   "low_confidence",
   "inconsistent",
   "not_extracted",
+  "invited",
 ]);
-const NEGATIVE = new Set(["unreadable", "failed", "rejected", "cancelled", "unclear", "absent", "invalid"]);
+const NEGATIVE = new Set([
+  "unreadable",
+  "failed",
+  "rejected",
+  "cancelled",
+  "unclear",
+  "absent",
+  "invalid",
+  "suspended",
+  "deactivated",
+]);
 
 export function StatusBadge({ status }: { status: string }) {
   const label = status.replace(/_/g, " ");

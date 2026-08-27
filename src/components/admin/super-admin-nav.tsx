@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, ShieldCheck, ListChecks } from "lucide-react";
+import { Home, ShieldCheck, ListChecks, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
   { href: "/super-admin/overview", label: "Overview", icon: Home },
   { href: "/super-admin/rules", label: "Rules", icon: ShieldCheck },
   { href: "/super-admin/schemes", label: "Schemes", icon: ListChecks },
+  { href: "/super-admin/accounts", label: "Admin Accounts", icon: Users },
 ];
 
 export function SuperAdminNav() {

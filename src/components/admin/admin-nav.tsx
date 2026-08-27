@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, ShieldCheck, ListChecks, FileText, ClipboardCheck } from "lucide-react";
+import { Home, ShieldCheck, ListChecks, FileText, ClipboardCheck, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
@@ -11,6 +11,7 @@ const LINKS = [
   { href: "/admin/hitl", label: "HITL", icon: ClipboardCheck },
   { href: "/admin/rules", label: "Rules", icon: ShieldCheck },
   { href: "/admin/schemes", label: "Schemes", icon: ListChecks },
+  { href: "/admin/accounts", label: "Accounts", icon: Users },
 ];
 
 export function AdminNav() {

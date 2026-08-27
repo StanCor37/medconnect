@@ -12,6 +12,8 @@ import {
 describe("accounts service — invite, activate, suspend, delete", () => {
   let fx: Fixtures;
   let newUserEmail: string;
+  const extraUserIds: string[] = [];
+  const extraProviderIds: string[] = [];
 
   beforeAll(async () => {
     fx = await buildFixtures();
@@ -25,6 +27,15 @@ describe("accounts service — invite, activate, suspend, delete", () => {
       await testDb.session.deleteMany({ where: { userId: user.id } });
       await testDb.invitation.deleteMany({ where: { userId: user.id } });
       await testDb.user.delete({ where: { id: user.id } });
+    }
+    if (extraUserIds.length > 0) {
+      await testDb.auditEvent.deleteMany({ where: { targetId: { in: extraUserIds } } });
+      await testDb.session.deleteMany({ where: { userId: { in: extraUserIds } } });
+      await testDb.invitation.deleteMany({ where: { userId: { in: extraUserIds } } });
+      await testDb.user.deleteMany({ where: { id: { in: extraUserIds } } });
+    }
+    if (extraProviderIds.length > 0) {
+      await testDb.provider.deleteMany({ where: { id: { in: extraProviderIds } } });
     }
     await fx.cleanup();
   });
@@ -148,5 +159,75 @@ describe("accounts service — invite, activate, suspend, delete", () => {
 
     const gone = await testDb.user.findUnique({ where: { id: userId } });
     expect(gone).toBeNull();
+  });
+
+  it("Super Admin can create a Client Admin account for a Client", async () => {
+    const email = `new-admin-${uniqueSuffix()}@test.medconnect.invalid`;
+    const result = await testDb.$transaction((tx) =>
+      createAccountService(
+        tx,
+        fx.authFor("superAdmin"),
+        { email, firstName: "New", lastName: "Admin", role: "client_admin", clientId: fx.clientA.id },
+        "http://localhost:3000/login"
+      )
+    );
+    extraUserIds.push(result.userId);
+
+    const created = await testDb.user.findUniqueOrThrow({ where: { id: result.userId } });
+    expect(created.role).toBe("client_admin");
+    expect(created.clientId).toBe(fx.clientA.id);
+    expect(created.providerId).toBeNull();
+  });
+
+  it("Super Admin cannot create a Provider User for a connected (non-standalone) Provider", async () => {
+    await expect(
+      testDb.$transaction((tx) =>
+        createAccountService(
+          tx,
+          fx.authFor("superAdmin"),
+          {
+            email: `blocked-${uniqueSuffix()}@test.medconnect.invalid`,
+            firstName: "Should",
+            lastName: "Fail",
+            role: "provider_user",
+            providerId: fx.providerConnected.id, // mode: client_connected
+          },
+          "http://localhost:3000/login"
+        )
+      )
+    ).rejects.toThrow(/standalone Providers they created/);
+  });
+
+  it("Super Admin cannot create a Provider User for a standalone Provider it did not itself create", async () => {
+    const s = uniqueSuffix();
+    const foreignStandaloneProvider = await testDb.provider.create({
+      data: {
+        legalName: `Test Foreign Standalone Provider ${s}`,
+        normalizedName: `test foreign standalone provider ${s}`,
+        mode: "standalone",
+        country: "RS",
+        officialRegistrationNumber: `TEST-REG-FOREIGN-${s}`,
+        createdByClientAdminId: fx.clientAdminA.id,
+        createdBySuperAdminId: null,
+      },
+    });
+    extraProviderIds.push(foreignStandaloneProvider.id);
+
+    await expect(
+      testDb.$transaction((tx) =>
+        createAccountService(
+          tx,
+          fx.authFor("superAdmin"),
+          {
+            email: `blocked-${uniqueSuffix()}@test.medconnect.invalid`,
+            firstName: "Should",
+            lastName: "Fail",
+            role: "provider_user",
+            providerId: foreignStandaloneProvider.id,
+          },
+          "http://localhost:3000/login"
+        )
+      )
+    ).rejects.toThrow(/standalone Providers they created/);
   });
 });

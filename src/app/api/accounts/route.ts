@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { withAuth } from "@/lib/authz/withAuth";
 import { can } from "@/lib/authz/can";
 import { createAccountService, AccountServiceError } from "@/lib/accounts/service";
+import { scopedUserWhere } from "@/lib/organizations/scoping";
 import { createAccountSchema } from "@/lib/validation/account";
 
 export const POST = withAuth(async (req: NextRequest, auth, tx) => {
@@ -38,4 +39,29 @@ export const POST = withAuth(async (req: NextRequest, auth, tx) => {
     }
     throw err;
   }
+});
+
+export const GET = withAuth(async (_req: NextRequest, auth, tx) => {
+  const decision = can(auth, "user.view", { type: "User" });
+  if (!decision.allowed) return Response.json({ error: "forbidden" }, { status: decision.status });
+
+  const users = await tx.user.findMany({
+    where: scopedUserWhere(auth),
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      status: true,
+      firstName: true,
+      lastName: true,
+      providerId: true,
+      clientId: true,
+      createdAt: true,
+      updatedAt: true,
+      provider: { select: { legalName: true } },
+      client: { select: { legalName: true } },
+    },
+  });
+  return Response.json(users);
 });

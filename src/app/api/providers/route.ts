@@ -46,7 +46,7 @@ export const GET = withAuth(async (_req: NextRequest, auth, tx) => {
   const providers = await tx.provider.findMany({
     where: scopedProviderWhere(auth),
     orderBy: { createdAt: "desc" },
-    select: { id: true, legalName: true, mode: true, country: true, status: true, createdAt: true },
+    select: { id: true, legalName: true, mode: true, country: true, status: true, createdAt: true, createdBySuperAdminId: true },
   });
   return Response.json(providers);
 });
