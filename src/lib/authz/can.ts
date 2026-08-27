@@ -69,7 +69,9 @@ export type Action =
   | "document.archive"
   | "document.delete"
   | "document.confirmType"
-  | "document.reviewExtraction";
+  | "document.reviewExtraction"
+  // --- Admin monitoring & analytics (Segment 9) ---
+  | "analytics.view";
 
 /**
  * A resource passed to `can()` must already have been fetched through the
@@ -83,7 +85,16 @@ export type Action =
  * layer (RLS or otherwise) it cannot actually observe from a pure function.
  */
 export interface ResourceRef {
-  type: "User" | "Provider" | "Client" | "ProviderClientRelationship" | "Case" | "ValidationRule" | "ValidationScheme" | "HitlTask";
+  type:
+    | "User"
+    | "Provider"
+    | "Client"
+    | "ProviderClientRelationship"
+    | "Case"
+    | "ValidationRule"
+    | "ValidationScheme"
+    | "HitlTask"
+    | "Analytics";
   id?: string;
   providerId?: string | null;
   clientId?: string | null;
@@ -246,6 +257,16 @@ const policies: Record<Action, Policy> = {
   "document.reviewExtraction": caseMutationPolicy,
   "document.view": (ctx) => (ctx.role === "super_admin" ? deny(404) : allow()), // == case.view, verbatim
   "document.download": (ctx) => (ctx.role === "super_admin" ? deny(404) : allow()),
+
+  // --- Admin monitoring & analytics (Segment 9) ---
+  // Client Admin only — Provider Users don't have this dashboard at all
+  // (role-level 403), Super Admin gets its own separate aggregate view in a
+  // later pass, not this Client-scoped one (404, matching the "Super Admin
+  // pretends Cases don't exist" convention above).
+  "analytics.view": (ctx) => {
+    if (ctx.role === "client_admin") return allow();
+    return deny(ctx.role === "super_admin" ? 404 : 403);
+  },
 };
 
 // Super Admin CAN see a Client-owned rule/scheme (governance) but never edit

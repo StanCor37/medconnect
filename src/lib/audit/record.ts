@@ -110,7 +110,20 @@ export type AuditEventType =
   | "case_liquidated"
   | "case_closed"
   | "case_cancelled"
-  | "case_reopened";
+  | "case_reopened"
+  // Segment 9 — Admin Monitoring and Analytics. Only "admin_dashboard_opened"
+  // is actually emitted this phase (the Overview dashboard). The rest are
+  // reserved for the exports/usage-cost/provider-analytics/rule-analytics
+  // work this phase deliberately defers — same "pre-reserve before the
+  // emitting segment exists" precedent as case_scheme_assigned before
+  // Segment 3.
+  | "admin_dashboard_opened"
+  | "case_list_exported"
+  | "analytics_exported"
+  | "usage_viewed"
+  | "cost_viewed"
+  | "provider_metrics_viewed"
+  | "rule_metrics_viewed";
 
 export interface AuditEventInput {
   eventType: AuditEventType;
