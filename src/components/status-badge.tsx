@@ -11,6 +11,7 @@ const POSITIVE = new Set([
   "validated",
   "validated_with_issues",
   "accepted",
+  "liquidated",
   "submitted_to_client",
   "closed",
   "confirmed",

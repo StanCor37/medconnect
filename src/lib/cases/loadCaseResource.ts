@@ -13,6 +13,7 @@ export async function loadCaseResource(
       type: "Case",
       id: caseRow.id,
       providerId: caseRow.providerId,
+      clientId: caseRow.clientId,
       providerCaseAccess: caseRow.providerCaseAccess,
       createdByUserId: caseRow.createdByUserId,
     },

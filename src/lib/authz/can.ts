@@ -37,6 +37,15 @@ export type Action =
   | "case.assignScheme"
   | "case.validate"
   | "case.requestRevalidation"
+  // --- Case lifecycle (Segment 8) ---
+  | "case.submit"
+  | "case.returnToProvider"
+  | "case.accept"
+  | "case.reject"
+  | "case.markLiquidated"
+  | "case.close"
+  | "case.cancel"
+  | "case.reopen"
   | "hitl.view"
   | "hitl.decide"
   | "rule.create"
@@ -177,6 +186,23 @@ const policies: Record<Action, Policy> = {
   // that loaded this Case (same reasoning as case.view's redundant check).
   "case.requestRevalidation": (ctx) => (ctx.role === "client_admin" ? allow() : deny(403)),
 
+  // --- Case lifecycle (Segment 8) ---
+  // Provider-only actions.
+  "case.submit": caseMutationPolicy,
+  // Client-Admin-only actions — this is the first Client Admin Case-MUTATION
+  // authority in the codebase (previously Client Admin only ever decided
+  // HITL tasks, never touched the Case itself).
+  "case.returnToProvider": clientCaseMutationPolicy,
+  "case.accept": clientCaseMutationPolicy,
+  "case.reject": clientCaseMutationPolicy,
+  "case.markLiquidated": clientCaseMutationPolicy,
+  // Dual-actor: whichever role currently holds the Case's mutation rights —
+  // ctx.role alone disambiguates which of the two ownership checks applies,
+  // no route-level branching needed.
+  "case.close": lifecycleDualActorPolicy,
+  "case.cancel": lifecycleDualActorPolicy,
+  "case.reopen": lifecycleDualActorPolicy,
+
   // --- HITL tasks (Segment 7) ---
   // Provider User: read-only (spec §15 "inspect evidence", never decide).
   // Client Admin: must own the task's assignedClientId — re-checked here in
@@ -241,6 +267,22 @@ function caseMutationPolicy(ctx: AuthContext, res: ResourceRef): Decision {
   if (res.providerId !== ctx.providerId) return deny(404); // cross-Provider — never confirm existence
   if (res.providerCaseAccess === "creator_only" && res.createdByUserId !== ctx.userId) return deny(404); // invisible to colleagues, matches scopedCaseWhere
   return allow();
+}
+
+// Client Admin's Case-mutation authority (Segment 8): the `clientId` match
+// on top of whatever scoped fetch already loaded this Case (that fetch is
+// where the active-relationship requirement is enforced — same shape as
+// hitl.decide's own resource check against a HitlTask's assignedClientId).
+function clientCaseMutationPolicy(ctx: AuthContext, res: ResourceRef): Decision {
+  if (ctx.role === "super_admin") return deny(404);
+  if (ctx.role !== "client_admin") return deny(403);
+  return res.clientId === ctx.clientId ? allow() : deny(404);
+}
+
+function lifecycleDualActorPolicy(ctx: AuthContext, res: ResourceRef): Decision {
+  if (ctx.role === "provider_user") return caseMutationPolicy(ctx, res);
+  if (ctx.role === "client_admin") return clientCaseMutationPolicy(ctx, res);
+  return deny(404); // super_admin
 }
 
 /**

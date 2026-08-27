@@ -87,7 +87,30 @@ export type AuditEventType =
   | "hitl_started"
   | "hitl_resolved"
   | "hitl_overridden"
-  | "revalidation_started";
+  | "revalidation_started"
+  // Segment 8 — Case Statuses and Lifecycle. "case_status_changed" is fired
+  // by every transition (src/lib/cases/stateMachine.ts); the specific
+  // action-named events below are fired ADDITIONALLY by their own explicit
+  // action service, matching how the existing case_archived/case_restored
+  // already coexist with a status change. "case_validation_started" /
+  // "case_provider_action_required" / "case_client_review_requested" are
+  // reserved (spec §21 names them) but not separately emitted this phase —
+  // Segment 7's own "validation_started"/"provider_action_requested"/
+  // "client_review_requested" plus this segment's generic
+  // "case_status_changed" already cover the same moments without a
+  // near-duplicate event name.
+  | "case_status_changed"
+  | "case_validation_started"
+  | "case_provider_action_required"
+  | "case_client_review_requested"
+  | "case_submitted"
+  | "case_returned"
+  | "case_accepted"
+  | "case_rejected"
+  | "case_liquidated"
+  | "case_closed"
+  | "case_cancelled"
+  | "case_reopened";
 
 export interface AuditEventInput {
   eventType: AuditEventType;

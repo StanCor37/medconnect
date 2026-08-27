@@ -140,6 +140,7 @@ export async function buildFixtures() {
     // Case has RESTRICT (not SetNull) FKs to Provider/User, so Case rows
     // must be deleted before those — otherwise the deletes below fail.
     await testDb.idempotencyKey.deleteMany({ where: { providerId: { in: providerIds } } });
+    await testDb.caseStatusHistory.deleteMany({ where: { case: { providerId: { in: providerIds } } } });
     await testDb.case.deleteMany({ where: { providerId: { in: providerIds } } });
     await testDb.auditEvent.deleteMany({
       where: {

@@ -1,5 +1,5 @@
 import { Prisma } from "@/generated/prisma/client";
-import type { ValidationTrigger } from "@/generated/prisma/enums";
+import type { ValidationTrigger, OverallValidationResult, CaseStatus, CaseMode } from "@/generated/prisma/enums";
 import type { AuthContext } from "@/lib/authz/can";
 import { writeAuditEvent } from "@/lib/audit/record";
 import { getDefaultAiRuleEvaluator } from "@/lib/ai/claudeAiRuleEvaluator";
@@ -11,6 +11,32 @@ import { runDeterministicPhase, type PriorRuleResult, type RuleResultDraft } fro
 import { runAiPhase } from "@/lib/validation/engine/aiPhase";
 import { computeOverallValidationResult } from "@/lib/validation/engine/overallResult";
 import { shouldCreateHitlTask } from "@/lib/validation/engine/hitl";
+import { transitionCaseStatus } from "@/lib/cases/stateMachine";
+import { CaseServiceError } from "@/lib/cases/errors";
+
+/**
+ * spec Segment 8 §10's mapping table. `null` means "leave status unchanged"
+ * — technical failures stay `validating` ("remain open and show technical
+ * error", not a status value of its own); `needs_client_review` is never
+ * reached for a standalone Case (Segment 7 never creates HITL for one).
+ */
+function mapOverallResultToCaseStatus(overallResult: OverallValidationResult, caseMode: CaseMode): CaseStatus | null {
+  switch (overallResult) {
+    case "passed":
+      return "validated";
+    case "passed_with_warnings":
+    case "issues_found":
+      return "validated_with_issues";
+    case "needs_provider_action":
+      return "provider_action_required";
+    case "needs_client_review":
+      return caseMode === "client_connected" ? "client_review_required" : "provider_action_required";
+    case "incomplete":
+      return "documents_in_progress";
+    case "processing_failed":
+      return null;
+  }
+}
 
 export class ValidationServiceError extends Error {
   constructor(
@@ -45,8 +71,9 @@ export interface StartValidationRunDeps {
 /**
  * Orchestrates spec §6's 12-step pipeline end-to-end inside one transaction
  * (see the plan's §0.1 framing note on why AI calls run inline here, same
- * as OCR does today). Never touches Case.status (spec §27 — a different
- * segment's job).
+ * as OCR does today). Transitions Case.status to "validating" at the start
+ * and to the spec Segment 8 §10-mapped result status at the end, via
+ * transitionCaseStatus — the single source of truth for legal transitions.
  */
 export async function startValidationRunService(
   tx: Prisma.TransactionClient,
@@ -57,15 +84,38 @@ export async function startValidationRunService(
 ) {
   const aiRuleEvaluator = deps.aiRuleEvaluator ?? getDefaultAiRuleEvaluator();
 
-  const caseRow = await tx.case.findUnique({ where: { id: caseId } });
+  let caseRow = await tx.case.findUnique({ where: { id: caseId } });
   if (!caseRow) throw new ValidationServiceError("not_found", "Case not found");
   if (caseRow.archivedAt) throw new ValidationServiceError("invalid_state", "Cannot validate an archived Case");
   if (!caseRow.validationSchemeVersionId) {
     throw new ValidationServiceError("no_scheme_assigned", "Assign a Validation Scheme to this Case before validating");
   }
+  // Captured before the reassignment below, since re-assigning caseRow (a
+  // `let`, needed so its post-transition version is available further down)
+  // resets TS's property-level narrowing on caseRow.validationSchemeVersionId
+  // back to its declared `string | null`.
+  const validationSchemeVersionId = caseRow.validationSchemeVersionId;
+
+  // spec Segment 8 §4 "Validating: use while the current Validation Run
+  // processes" — this IS the actual "start" of the run from the Case's own
+  // lifecycle perspective, done first so the state machine (not just this
+  // function's own logic) governs which statuses may even begin a run.
+  try {
+    caseRow = await transitionCaseStatus(tx, actor, caseId, {
+      toStatus: "validating",
+      expectedVersion: caseRow.version,
+      actorType: "system",
+      source: "system",
+    });
+  } catch (err) {
+    if (err instanceof CaseServiceError) {
+      throw new ValidationServiceError(err.code === "invalid_transition" ? "invalid_state" : err.code, err.message);
+    }
+    throw err;
+  }
 
   const schemeVersion = await tx.validationSchemeVersion.findUniqueOrThrow({
-    where: { id: caseRow.validationSchemeVersionId },
+    where: { id: validationSchemeVersionId },
     include: {
       documentTypeDefinitions: { include: { extractionFieldDefinitions: true } },
       schemeRules: { include: { ruleVersion: { include: { rule: true } } } },
@@ -318,6 +368,27 @@ export async function startValidationRunService(
       action: "request_action",
       source: "api",
     });
+  }
+
+  // spec Segment 8 §10: map the just-computed result to the Case's resting
+  // status. `null` (processing_failed) means "stays validating" — no second
+  // transition. caseRow.version is already the post-first-transition value
+  // (caseRow was reassigned above), so no extra fetch is needed.
+  const mappedStatus = mapOverallResultToCaseStatus(overallResult, caseRow.caseMode);
+  if (mappedStatus !== null) {
+    try {
+      await transitionCaseStatus(tx, actor, caseId, {
+        toStatus: mappedStatus,
+        expectedVersion: caseRow.version,
+        actorType: "system",
+        source: "system",
+      });
+    } catch (err) {
+      if (err instanceof CaseServiceError) {
+        throw new ValidationServiceError(err.code === "invalid_transition" ? "invalid_state" : err.code, err.message);
+      }
+      throw err;
+    }
   }
 
   return tx.validationRun.findUniqueOrThrow({

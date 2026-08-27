@@ -1386,3 +1386,101 @@ CREATE POLICY hitl_decision_insert_client_admin ON "HitlDecision" FOR INSERT
         AND t."assignedClientId" = NULLIF(current_setting('app.client_id', true), '')
     )
   );
+
+-- ============================================================================
+-- Segment 8 — Case Statuses and Lifecycle.
+--
+-- Client Admin never had a "Case" MODIFY policy before this segment (only
+-- SELECT) — Segment 8 gives Client Admin its first-ever real mutation
+-- authority over a Case (accept/reject/liquidate/return/etc.), so a real
+-- UPDATE policy is added here for the first time, restricted to the same
+-- active-relationship condition the existing SELECT policy already uses.
+-- Provider retains its existing case_modify_provider_user policy unchanged.
+-- CaseStatusHistory/CaseSubmission both follow ValidationRun's shape:
+-- joined via caseId, Super Admin gets zero access, both remaining roles get
+-- SELECT + the INSERT their own actions actually produce.
+-- ============================================================================
+
+ALTER TABLE "CaseStatusHistory" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "CaseSubmission" ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY case_modify_client_admin ON "Case" FOR UPDATE
+  USING (
+    current_setting('app.role', true) = 'client_admin'
+    AND "clientId" = NULLIF(current_setting('app.client_id', true), '')
+    AND EXISTS (
+      SELECT 1 FROM "ProviderClientRelationship" r
+      WHERE r.id = "Case"."providerClientRelationshipId" AND r.status = 'active'
+    )
+  )
+  WITH CHECK ("clientId" = NULLIF(current_setting('app.client_id', true), ''));
+
+-- ----------------------------------------------------------------------------
+-- CaseStatusHistory
+-- ----------------------------------------------------------------------------
+
+CREATE POLICY case_status_history_select_provider_user ON "CaseStatusHistory" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "CaseStatusHistory"."caseId"
+        AND c."providerId" = NULLIF(current_setting('app.provider_id', true), '')
+        AND (
+          c."providerCaseAccess" = 'provider_shared'
+          OR (c."providerCaseAccess" = 'creator_only' AND c."createdByUserId" = NULLIF(current_setting('app.user_id', true), ''))
+        )
+    )
+  );
+CREATE POLICY case_status_history_insert_provider_user ON "CaseStatusHistory" FOR INSERT
+  WITH CHECK (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (SELECT 1 FROM "Case" c WHERE c.id = "CaseStatusHistory"."caseId" AND c."providerId" = NULLIF(current_setting('app.provider_id', true), ''))
+  );
+CREATE POLICY case_status_history_select_client_admin ON "CaseStatusHistory" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'client_admin'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "CaseStatusHistory"."caseId"
+        AND c."clientId" = NULLIF(current_setting('app.client_id', true), '')
+        AND EXISTS (
+          SELECT 1 FROM "ProviderClientRelationship" r
+          WHERE r.id = c."providerClientRelationshipId" AND r.status = 'active'
+        )
+    )
+  );
+CREATE POLICY case_status_history_insert_client_admin ON "CaseStatusHistory" FOR INSERT
+  WITH CHECK (
+    current_setting('app.role', true) = 'client_admin'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "CaseStatusHistory"."caseId"
+        AND c."clientId" = NULLIF(current_setting('app.client_id', true), '')
+    )
+  );
+
+-- ----------------------------------------------------------------------------
+-- CaseSubmission — Provider-created only (spec §4: submission is an explicit
+-- Provider action); Client Admin is read-only.
+-- ----------------------------------------------------------------------------
+
+CREATE POLICY case_submission_select_provider_user ON "CaseSubmission" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (
+      SELECT 1 FROM "Case" c WHERE c.id = "CaseSubmission"."caseId"
+        AND c."providerId" = NULLIF(current_setting('app.provider_id', true), '')
+        AND (
+          c."providerCaseAccess" = 'provider_shared'
+          OR (c."providerCaseAccess" = 'creator_only' AND c."createdByUserId" = NULLIF(current_setting('app.user_id', true), ''))
+        )
+    )
+  );
+CREATE POLICY case_submission_insert_provider_user ON "CaseSubmission" FOR INSERT
+  WITH CHECK (
+    current_setting('app.role', true) = 'provider_user'
+    AND EXISTS (SELECT 1 FROM "Case" c WHERE c.id = "CaseSubmission"."caseId" AND c."providerId" = NULLIF(current_setting('app.provider_id', true), ''))
+  );
+CREATE POLICY case_submission_select_client_admin ON "CaseSubmission" FOR SELECT
+  USING (
+    current_setting('app.role', true) = 'client_admin'
+    AND "clientId" = NULLIF(current_setting('app.client_id', true), '')
+  );

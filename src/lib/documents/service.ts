@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type { Prisma } from "@/generated/prisma/client";
-import type { ClassificationStatus, DocumentStatus } from "@/generated/prisma/enums";
+import type { CaseStatus, ClassificationStatus, DocumentStatus } from "@/generated/prisma/enums";
 import type { AuthContext } from "@/lib/authz/can";
 import type { StorageAdapter } from "@/lib/storage/StorageAdapter";
 import { computeStorageKey } from "@/lib/storage/LocalFilesystemStorageAdapter";
@@ -15,6 +15,8 @@ import { checkForDuplicateDocumentInCase } from "@/lib/duplicate-detection/docum
 import { processAfterUpload, processAfterTypeConfirmed } from "@/lib/processing/pipeline";
 import { writeAuditEvent } from "@/lib/audit/record";
 import type { ReplacementReasonInput } from "@/lib/validation/document";
+import { transitionCaseStatus } from "@/lib/cases/stateMachine";
+import { CaseServiceError } from "@/lib/cases/errors";
 
 export class DocumentServiceError extends Error {
   constructor(
@@ -86,6 +88,56 @@ function computeDocumentStatus(classificationStatus: ClassificationStatus): Docu
 
 function sha256Hex(buffer: Buffer): string {
   return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+/**
+ * Segment 8 §4/§7's document-driven phase advance: draft -> documents_in_progress
+ * on the first (non-archived) Document; documents_in_progress /
+ * provider_action_required -> ready_for_validation once a Scheme is pinned
+ * and no Document is stuck needing type/split confirmation. Deliberately NOT
+ * the full Segment 7 evaluateRequirements check — "ready" here only means
+ * "a Provider can attempt validation", not "every required document/field is
+ * present" (that distinction is what validation's own "incomplete" result is
+ * for). Called after every document mutation; a no-op recalculation (already
+ * at the right resting status, or the Case isn't in a document-phase status
+ * at all — e.g. mid-validation, submitted, or terminal) is silently skipped.
+ */
+async function recalculateDocumentPhaseStatus(tx: Prisma.TransactionClient, actor: AuthContext, caseId: string) {
+  const caseRow = await tx.case.findUnique({ where: { id: caseId } });
+  if (!caseRow) return;
+  if (caseRow.status !== "draft" && caseRow.status !== "documents_in_progress" && caseRow.status !== "provider_action_required") {
+    return;
+  }
+
+  const documentCount = await tx.document.count({ where: { caseId, archivedAt: null } });
+  if (documentCount === 0) return;
+
+  let target: CaseStatus;
+  if (caseRow.status === "draft") {
+    target = "documents_in_progress";
+  } else {
+    if (!caseRow.validationSchemeVersionId) return;
+    const pendingCount = await tx.document.count({
+      where: { caseId, archivedAt: null, status: { in: ["needs_type_confirmation", "needs_split_confirmation"] } },
+    });
+    if (pendingCount > 0) return;
+    target = "ready_for_validation";
+  }
+  if (target === caseRow.status) return;
+
+  try {
+    await transitionCaseStatus(tx, actor, caseId, {
+      toStatus: target,
+      expectedVersion: caseRow.version,
+      actorType: "system",
+      source: "system",
+    });
+  } catch (err) {
+    // A concurrent status change lost the race — the next mutation that
+    // touches this Case will recalculate again, so this is safe to drop.
+    if (err instanceof CaseServiceError && (err.code === "stale_version" || err.code === "invalid_transition")) return;
+    throw err;
+  }
 }
 
 export interface UploadFileInput {
@@ -299,6 +351,8 @@ export async function uploadDocumentsService(
     }
   }
 
+  await recalculateDocumentPhaseStatus(tx, actor, caseId);
+
   return results;
 }
 
@@ -359,6 +413,8 @@ export async function confirmDocumentTypeService(
     action: "confirm_type",
     source: "api",
   });
+
+  await recalculateDocumentPhaseStatus(tx, actor, document.caseId);
 
   return updated;
 }
@@ -519,6 +575,8 @@ export async function replaceDocumentVersionService(
     reasonCode: replacementReason,
   });
 
+  await recalculateDocumentPhaseStatus(tx, actor, document.caseId);
+
   return updated;
 }
 
@@ -627,9 +685,12 @@ export async function deleteDocumentService(
       await storage.delete(sf.storageKey);
     }
 
+    await recalculateDocumentPhaseStatus(tx, actor, document.caseId);
+
     return { hardDeleted: true };
   }
 
   await archiveDocumentService(tx, actor, documentId, document.version);
+  await recalculateDocumentPhaseStatus(tx, actor, document.caseId);
   return { hardDeleted: false };
 }

@@ -184,6 +184,7 @@ describe("cases/service — update, share, assign, archive lifecycle", () => {
   });
 
   afterAll(async () => {
+    await testDb.caseStatusHistory.deleteMany({ where: { caseId: { in: createdCaseIds } } });
     await testDb.case.deleteMany({ where: { id: { in: createdCaseIds } } });
     await testDb.auditEvent.deleteMany({ where: { targetType: "Case", targetId: { in: createdCaseIds } } });
     await fx.cleanup();

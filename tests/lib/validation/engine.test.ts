@@ -34,6 +34,7 @@ describe("validation engine — Segment 7", () => {
     await testDb.validationRun.deleteMany({ where: { caseId: { in: validationCaseIds } } });
 
     if (extraCaseIds.length > 0) {
+      await testDb.caseStatusHistory.deleteMany({ where: { caseId: { in: extraCaseIds } } });
       await testDb.extractedField.deleteMany({ where: { caseId: { in: extraCaseIds } } });
       await testDb.document.updateMany({ where: { caseId: { in: extraCaseIds } }, data: { currentVersionId: null } });
       await testDb.documentVersion.deleteMany({ where: { document: { caseId: { in: extraCaseIds } } } });
@@ -57,6 +58,11 @@ describe("validation engine — Segment 7", () => {
         clientId: fx.clientA.id,
         providerClientRelationshipId: fx.activeRelationship.id,
         validationSchemeVersionId: dfx.schemeVersion.id,
+        // Segment 8's state machine only allows "validating" from a handful
+        // of statuses — these Cases are created directly (bypassing the
+        // document-upload lifecycle that would otherwise progress them
+        // there), so they're seeded already-ready for the engine tests below.
+        status: "ready_for_validation",
       },
     });
     extraCaseIds.push(c.id);
@@ -76,6 +82,11 @@ describe("validation engine — Segment 7", () => {
     const deterministicResult = run.ruleResults.find((r) => r.ruleVersionId === vfx.deterministicRuleVersion.id)!;
     expect(deterministicResult.outcome).not.toBe("fail");
     expect(fakeAi.calls).toHaveLength(0);
+
+    // Segment 8 §10 mapping: "incomplete" lands the Case back on
+    // documents_in_progress, not left sitting on "validating".
+    const caseAfter = await testDb.case.findUniqueOrThrow({ where: { id: caseRow.id } });
+    expect(caseAfter.status).toBe("documents_in_progress");
   });
 
   it("pins exact Scheme/Case/Rule versions on the run", async () => {
@@ -83,7 +94,10 @@ describe("validation engine — Segment 7", () => {
     const fakeAi = new FakeAiRuleEvaluator();
     const run = await testDb.$transaction((tx) => startValidationRunService(tx, fx.authFor("providerUserConnected"), caseRow.id, "provider_started", { aiRuleEvaluator: fakeAi }));
     expect(run.schemeVersionId).toBe(dfx.schemeVersion.id);
-    expect(run.casePinnedVersion).toBe(caseRow.version);
+    // +1: startValidationRunService's own first act is transitioning the
+    // Case to "validating" (Segment 8), which bumps version before the run
+    // row (and its casePinnedVersion snapshot) is created.
+    expect(run.casePinnedVersion).toBe(caseRow.version + 1);
     expect(run.ruleResults.every((r) => r.validationRunId === run.id)).toBe(true);
   });
 
@@ -107,6 +121,10 @@ describe("validation engine — Segment 7", () => {
     expect(run.hitlTasks).toHaveLength(1);
     expect(run.hitlTasks[0].assignedClientId).toBe(fx.clientA.id);
     expect(run.overallResult).toBe("needs_client_review");
+
+    // Segment 8 §10 mapping: needs_client_review -> client_review_required.
+    const caseAfter = await testDb.case.findUniqueOrThrow({ where: { id: caseRow.id } });
+    expect(caseAfter.status).toBe("client_review_required");
   });
 
   it("a technical AI failure is processing_error, never fail — technical errors are not insurance failures", async () => {
@@ -133,6 +151,7 @@ describe("validation engine — Segment 7", () => {
         providerId: fx.providerStandalone.id,
         createdByUserId: fx.providerUserStandalone.id,
         validationSchemeVersionId: dfx.schemeVersion.id,
+        status: "ready_for_validation",
       },
     });
     extraCaseIds.push(standaloneWithScheme.id);
@@ -153,6 +172,10 @@ describe("validation engine — Segment 7", () => {
     // to needs_provider_action (see overallResult.test.ts for that case
     // tested directly). What matters here is specifically the absence of any HitlTask.
     expect(run.overallResult).toBe("passed_with_warnings");
+
+    // Segment 8 §10 mapping: passed_with_warnings -> validated_with_issues.
+    const caseAfter = await testDb.case.findUniqueOrThrow({ where: { id: standaloneWithScheme.id } });
+    expect(caseAfter.status).toBe("validated_with_issues");
   });
 
   it("revalidation: an unchanged snapshot reuses every result with zero new AI calls; a changed field only reruns the dependent rule", async () => {
@@ -229,7 +252,10 @@ describe("validation engine — Segment 7", () => {
     await createConfirmedDocument(dfx.pendingRelationshipCase, fx.providerUserConnected.id, "invoice", [
       { fieldDefinitionId: vfx.totalCostField.id, valueType: "money", confirmedValue: { minorUnits: 4200, currency: "EUR" } },
     ]);
-    await testDb.case.update({ where: { id: dfx.pendingRelationshipCase.id }, data: { validationSchemeVersionId: dfx.schemeVersion.id } });
+    await testDb.case.update({
+      where: { id: dfx.pendingRelationshipCase.id },
+      data: { validationSchemeVersionId: dfx.schemeVersion.id, status: "ready_for_validation" },
+    });
 
     const fakeAi = new FakeAiRuleEvaluator([fakeAiRuleResult("needs_review")]);
     const run = await testDb.$transaction((tx) =>
@@ -238,7 +264,7 @@ describe("validation engine — Segment 7", () => {
     expect(run.hitlTasks).toHaveLength(0);
     expect(run.overallResult).toBe("passed_with_warnings"); // no active Client relationship to route the (non-blocking) review to — see the standalone test's comment on severity
 
-    await testDb.case.update({ where: { id: dfx.pendingRelationshipCase.id }, data: { validationSchemeVersionId: null } });
+    await testDb.case.update({ where: { id: dfx.pendingRelationshipCase.id }, data: { validationSchemeVersionId: null, status: "draft" } });
   });
 
   it("a Client Admin from a different Client cannot decide someone else's HITL task", async () => {

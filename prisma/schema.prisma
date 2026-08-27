@@ -77,11 +77,10 @@ enum ProviderCaseAccess {
   provider_shared
 }
 
-// Full Segment 8 lifecycle enum, defined now even though this phase only
-// ever sets/transitions draft <-> archived (restore reverts to draft) —
-// avoids a painful rename/removal migration on a populated table later.
-// Postgres enum additions are cheap; this is the same "anticipate the shape
-// before its segment is built" precedent as AuditEvent.caseId.
+// Full Segment 8 lifecycle enum — defined ahead of Segment 8 itself (same
+// "anticipate the shape before its segment is built" precedent as
+// AuditEvent.caseId), now actually driven by the real state machine in
+// src/lib/cases/stateMachine.ts.
 enum CaseStatus {
   draft
   documents_in_progress
@@ -267,6 +266,62 @@ enum HitlDecisionType {
 }
 
 // ============================================================================
+// Segment 8 — Case Statuses and Lifecycle.
+// ============================================================================
+
+enum AcceptanceSource {
+  client_admin
+  client_api // reserved — no Client API exists yet
+}
+
+enum RejectionReason {
+  documentation_incomplete
+  information_inconsistent
+  not_eligible
+  duplicate_submission
+  outside_policy_period
+  service_not_covered
+  client_decision
+  other
+}
+
+enum CancellationReason {
+  created_by_mistake
+  duplicate_case
+  patient_withdrew
+  service_not_performed
+  submitted_elsewhere
+  other
+}
+
+enum ReturnReason {
+  missing_document
+  unreadable_document
+  incorrect_document
+  incorrect_information
+  validation_conflict
+  additional_information_required
+  other
+}
+
+// Matches AuditEventInput's own "ui" | "api" | "system" source concept but
+// is intentionally its own enum — spec §16 names these specific 5 values for
+// status-history rows, a narrower/different vocabulary from AuditEvent.source.
+enum TransitionSource {
+  provider_ui
+  client_ui
+  system
+  provider_api
+  client_api
+}
+
+enum TransitionActorType {
+  provider
+  client
+  system
+}
+
+// ============================================================================
 // Segment 5 — Document Upload and Versioning (data model, storage,
 // authorization, deterministic upload/versioning pipeline only; AI
 // classification, split detection, OCR-based readability, async job
@@ -427,9 +482,15 @@ model User {
 
   invitations        Invitation[]
   sessions           Session[]
-  auditEventsAsActor AuditEvent[] @relation("AuditActor")
-  casesCreated       Case[]       @relation("CaseCreatedBy")
-  casesAssigned      Case[]       @relation("CaseAssignedTo")
+  auditEventsAsActor AuditEvent[]        @relation("AuditActor")
+  casesCreated       Case[]              @relation("CaseCreatedBy")
+  casesAssigned      Case[]              @relation("CaseAssignedTo")
+  casesAccepted      Case[]              @relation("CaseAcceptedBy")
+  casesRejected      Case[]              @relation("CaseRejectedBy")
+  casesLiquidated    Case[]              @relation("CaseLiquidatedBy")
+  casesCancelled     Case[]              @relation("CaseCancelledBy")
+  caseStatusChanges  CaseStatusHistory[] @relation("CaseStatusHistoryActor")
+  caseSubmissions    CaseSubmission[]    @relation("CaseSubmissionSubmittedBy")
 
   rulesCreated            ValidationRule[]          @relation("RuleCreatedBy")
   ruleVersionsPublished   ValidationRuleVersion[]   @relation("RuleVersionPublishedBy")
@@ -472,6 +533,7 @@ model Client {
   ownedSchemes ValidationScheme[] @relation("ClientOwnedSchemes")
 
   hitlTasksAssigned HitlTask[]
+  caseSubmissions   CaseSubmission[]
 }
 
 model Provider {
@@ -670,11 +732,39 @@ model Case {
   serviceType      String?
   eventDate        DateTime?
 
-  version     Int       @default(1) // optimistic concurrency — see src/lib/cases/service.ts
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  submittedAt DateTime?
-  archivedAt  DateTime?
+  version             Int         @default(1) // optimistic concurrency — see src/lib/cases/service.ts
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  submittedAt         DateTime?
+  archivedAt          DateTime?
+  // Set whenever archiveCaseService runs (archiving is permissive — legal
+  // from any status, see the Segment 8 plan's "real tension" note) so
+  // restoreCaseService can restore to the correct prior status instead of
+  // always resetting to draft.
+  statusBeforeArchive CaseStatus?
+
+  acceptedByUserId String?
+  acceptedBy       User?             @relation("CaseAcceptedBy", fields: [acceptedByUserId], references: [id])
+  acceptedAt       DateTime?
+  acceptanceSource AcceptanceSource?
+
+  rejectedByUserId String?
+  rejectedBy       User?            @relation("CaseRejectedBy", fields: [rejectedByUserId], references: [id])
+  rejectedAt       DateTime?
+  rejectionReason  RejectionReason?
+  rejectionNote    String?
+
+  liquidatedByUserId           String?
+  liquidatedBy                 User?     @relation("CaseLiquidatedBy", fields: [liquidatedByUserId], references: [id])
+  liquidatedAt                 DateTime?
+  liquidationSource            String?
+  externalLiquidationReference String?
+
+  cancelledByUserId  String?
+  cancelledBy        User?               @relation("CaseCancelledBy", fields: [cancelledByUserId], references: [id])
+  cancelledAt        DateTime?
+  cancellationReason CancellationReason?
+  cancellationNote   String?
 
   auditEvents           AuditEvent[]
   documents             Document[]
@@ -683,6 +773,8 @@ model Case {
   validationRuns        ValidationRun[]
   hitlTasks             HitlTask[]
   validationRuleResults ValidationRuleResult[]
+  statusHistory         CaseStatusHistory[]
+  submissions           CaseSubmission[]
 
   // NULL is not distinct-safe for standalone Cases (clientId is null for
   // all of them) — src/lib/duplicate-detection/case.ts's app-layer check
@@ -1206,6 +1298,7 @@ model ValidationRun {
   ruleResults        ValidationRuleResult[]
   requirementResults RequirementResult[]
   hitlTasks          HitlTask[]
+  caseSubmissions    CaseSubmission[]
 
   @@unique([caseId, runNumber])
   @@index([caseId])
@@ -1344,4 +1437,55 @@ model HitlDecision {
   decidedAt        DateTime         @default(now())
 
   @@index([hitlTaskId])
+}
+
+// ============================================================================
+// Segment 8 — Case Statuses and Lifecycle.
+//
+// Deferred this phase (see the Segment 8 plan doc for full justification):
+// Notifications/SLA tracking and Analytics (§20/§22 — Segments 9/10 don't
+// exist), and reopening a *liquidated* Case (spec's own words: "use a
+// separately defined controlled adjustment process").
+// ============================================================================
+
+// Append-only — every Case.status change goes through exactly one place
+// (transitionCaseStatus in src/lib/cases/stateMachine.ts), which is what
+// this table's existence proves/enforces (spec §16 "never update current
+// status without history"). No `version` column — same precedent as
+// AuditEvent/HitlDecision; concurrency lives on the mutable Case itself.
+model CaseStatusHistory {
+  id          String              @id @default(uuid())
+  caseId      String
+  case        Case                @relation(fields: [caseId], references: [id])
+  fromStatus  CaseStatus? // null only for the case-creation row
+  toStatus    CaseStatus
+  actorUserId String? // null iff actorType = system
+  actor       User?               @relation("CaseStatusHistoryActor", fields: [actorUserId], references: [id])
+  actorType   TransitionActorType
+  reasonCode  String?
+  reason      String?
+  source      TransitionSource
+  createdAt   DateTime            @default(now())
+
+  @@index([caseId])
+}
+
+// Immutable point-in-time snapshot of what was actually submitted (spec
+// §4's "Later Case changes never silently update this snapshot") —
+// documentVersionIds is plain Json, not a join table, since this is never
+// queried relationally, only ever read back whole.
+model CaseSubmission {
+  id                 String        @id @default(uuid())
+  caseId             String
+  case               Case          @relation(fields: [caseId], references: [id])
+  clientId           String
+  client             Client        @relation(fields: [clientId], references: [id])
+  validationRunId    String
+  validationRun      ValidationRun @relation(fields: [validationRunId], references: [id])
+  documentVersionIds Json          @default("[]")
+  submittedByUserId  String
+  submittedBy        User          @relation("CaseSubmissionSubmittedBy", fields: [submittedByUserId], references: [id])
+  submittedAt        DateTime      @default(now())
+
+  @@index([caseId])
 }

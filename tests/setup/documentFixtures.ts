@@ -100,6 +100,7 @@ export async function buildDocumentFixtures(fx: Fixtures) {
   const schemeIds = [scheme.id];
 
   async function cleanup() {
+    await testDb.caseStatusHistory.deleteMany({ where: { caseId: { in: caseIds } } });
     await testDb.documentPageReference.deleteMany({ where: { sourceFile: { caseId: { in: caseIds } } } });
     await testDb.document.updateMany({ where: { caseId: { in: caseIds } }, data: { currentVersionId: null } });
     // Segment 6 processing artifacts have no cascade — clean up explicitly

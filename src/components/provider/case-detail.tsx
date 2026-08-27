@@ -7,10 +7,20 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status-badge";
 import { DocumentDetails } from "@/components/provider/document-details";
 import { ValidationPanel } from "@/components/validation-panel";
 import { ChevronDown, ChevronRight } from "lucide-react";
+
+const CANCELLATION_REASONS = [
+  { value: "created_by_mistake", label: "Created by mistake" },
+  { value: "duplicate_case", label: "Duplicate Case" },
+  { value: "patient_withdrew", label: "Patient withdrew" },
+  { value: "service_not_performed", label: "Service not performed" },
+  { value: "submitted_elsewhere", label: "Submitted elsewhere" },
+  { value: "other", label: "Other" },
+];
 
 interface CaseRow {
   id: string;
@@ -59,6 +69,11 @@ export function CaseDetail({ caseId }: { caseId: string }) {
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
   const [removingDocId, setRemovingDocId] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
+
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [cancelReason, setCancelReason] = useState<string>("");
+  const [reopenReason, setReopenReason] = useState<string>("");
 
   // Bumped by handlers after a mutation to trigger a re-fetch, rather than
   // calling an async loader directly from the effect body (which risks
@@ -158,6 +173,30 @@ export function CaseDetail({ caseId }: { caseId: string }) {
     }
   }
 
+  async function performAction(action: string, body: Record<string, unknown>) {
+    if (!caseRow) return;
+    setActionError(null);
+    setActionBusy(action);
+    try {
+      const res = await fetch(`/api/cases/${caseId}/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ version: caseRow.version, ...body }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setActionError(data?.message ?? "That action could not be completed.");
+        return;
+      }
+      setCancelReason("");
+      setReopenReason("");
+      refresh();
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   if (loadError) {
     return (
       <Alert variant="destructive">
@@ -207,6 +246,94 @@ export function CaseDetail({ caseId }: { caseId: string }) {
           </dl>
         </CardContent>
       </Card>
+
+      {(caseRow.status === "validated" ||
+        caseRow.status === "validated_with_issues" ||
+        caseRow.status === "draft" ||
+        caseRow.status === "documents_in_progress" ||
+        caseRow.status === "ready_for_validation" ||
+        caseRow.status === "provider_action_required" ||
+        caseRow.status === "closed" ||
+        caseRow.status === "cancelled") && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Case actions</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {actionError && (
+              <Alert variant="destructive">
+                <AlertDescription>{actionError}</AlertDescription>
+              </Alert>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              {caseRow.clientId && (caseRow.status === "validated" || caseRow.status === "validated_with_issues") && (
+                <Button disabled={actionBusy !== null} onClick={() => performAction("submit", { confirm: true })}>
+                  {actionBusy === "submit" ? "Submitting..." : "Submit to Client"}
+                </Button>
+              )}
+              {(caseRow.status === "validated" || caseRow.status === "validated_with_issues") && (
+                <Button
+                  variant="outline"
+                  disabled={actionBusy !== null}
+                  onClick={() => performAction("close", {})}
+                >
+                  {actionBusy === "close" ? "Closing..." : "Close"}
+                </Button>
+              )}
+              {(caseRow.status === "closed" || caseRow.status === "cancelled") && (
+                <div className="flex flex-1 flex-wrap items-center gap-2">
+                  <Textarea
+                    placeholder="Reason for reopening (required)"
+                    value={reopenReason}
+                    onChange={(e) => setReopenReason(e.target.value)}
+                    rows={1}
+                    className="min-h-9 flex-1"
+                  />
+                  <Button
+                    variant="outline"
+                    disabled={actionBusy !== null || !reopenReason.trim()}
+                    onClick={() => performAction("reopen", { reason: reopenReason.trim() })}
+                  >
+                    {actionBusy === "reopen" ? "Reopening..." : "Reopen"}
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {(caseRow.status === "draft" ||
+              caseRow.status === "documents_in_progress" ||
+              caseRow.status === "ready_for_validation" ||
+              caseRow.status === "provider_action_required") && (
+              <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+                <div className="w-56">
+                  <Select items={CANCELLATION_REASONS} value={cancelReason} onValueChange={(v) => setCancelReason(v as string)}>
+                    <SelectTrigger size="sm" className="w-full">
+                      <SelectValue placeholder="Cancellation reason" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CANCELLATION_REASONS.map((r) => (
+                        <SelectItem key={r.value} value={r.value}>
+                          {r.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-destructive hover:text-destructive"
+                  disabled={actionBusy !== null || !cancelReason}
+                  onClick={() => performAction("cancel", { cancellationReason: cancelReason })}
+                >
+                  {actionBusy === "cancel" ? "Cancelling..." : "Cancel Case"}
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <ValidationPanel caseId={caseId} caseVersion={caseRow.version} />
 
