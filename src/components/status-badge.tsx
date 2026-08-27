@@ -5,6 +5,10 @@ import { cn } from "@/lib/utils";
 // which stays reserved for actions. Covers Case, Document, and
 // Rule/Scheme lifecycle statuses since they all share the same
 // "draft / in-progress / ready / problem" shape.
+//
+// Colors come from the design-system status tokens in globals.css rather
+// than raw Tailwind palette classes, so dark mode and future palette changes
+// are handled in one place.
 const POSITIVE = new Set([
   "ready",
   "active",
@@ -50,14 +54,22 @@ export function StatusBadge({ status }: { status: string }) {
   }
   if (POSITIVE.has(status)) {
     return (
-      <Badge className={cn("border-green-200 bg-green-50 text-green-700 capitalize hover:bg-green-50")}>
+      <Badge
+        className={cn(
+          "border-[var(--status-positive-border)] bg-[var(--status-positive-bg)] text-[var(--status-positive-fg)] capitalize hover:bg-[var(--status-positive-bg)]"
+        )}
+      >
         {label}
       </Badge>
     );
   }
   if (PENDING.has(status)) {
     return (
-      <Badge className={cn("border-amber-200 bg-amber-50 text-amber-700 capitalize hover:bg-amber-50")}>
+      <Badge
+        className={cn(
+          "border-[var(--status-pending-border)] bg-[var(--status-pending-bg)] text-[var(--status-pending-fg)] capitalize hover:bg-[var(--status-pending-bg)]"
+        )}
+      >
         {label}
       </Badge>
     );

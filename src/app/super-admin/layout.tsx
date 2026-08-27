@@ -1,6 +1,7 @@
 import { requirePageUser } from "@/lib/auth/requirePageUser";
 import { SignOutButton } from "@/components/sign-out-button";
 import { SuperAdminNav } from "@/components/admin/super-admin-nav";
+import { BrandMark } from "@/components/brand-mark";
 
 export default async function SuperAdminLayout({ children }: { children: React.ReactNode }) {
   await requirePageUser(["super_admin"]);
@@ -10,7 +11,7 @@ export default async function SuperAdminLayout({ children }: { children: React.R
       <header className="border-b border-border bg-card">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3">
           <div className="flex items-center gap-8">
-            <span className="font-heading text-lg font-semibold text-foreground">MedConnect</span>
+            <BrandMark />
             <SuperAdminNav />
           </div>
           <SignOutButton />

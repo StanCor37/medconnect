@@ -84,6 +84,14 @@
   --sidebar-accent-foreground: #0b0d0e;
   --sidebar-border: #e2e4e4;
   --sidebar-ring: #853728;
+
+  /* status colours — semantic only, never brand */
+  --status-positive-bg: #f0fdf4;
+  --status-positive-border: #bbf7d0;
+  --status-positive-fg: #15803d;
+  --status-pending-bg: #fffbeb;
+  --status-pending-border: #fde68a;
+  --status-pending-fg: #b45309;
 }
 
 .dark {
@@ -118,6 +126,14 @@
   --sidebar-accent-foreground: #f7f8f8;
   --sidebar-border: #2a2d2e;
   --sidebar-ring: #a8493a;
+
+  /* status colours — extrapolated for dark, since globals.css had no prior dark status palette */
+  --status-positive-bg: #0f2417;
+  --status-positive-border: #1c4029;
+  --status-positive-fg: #6ee7a8;
+  --status-pending-bg: #2a1f08;
+  --status-pending-border: #4a3610;
+  --status-pending-fg: #fbbf24;
 }
 
 @layer base {

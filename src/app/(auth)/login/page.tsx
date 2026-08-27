@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { BrandMark } from "@/components/brand-mark";
 
 const ROLE_HOME: Record<string, string> = {
   super_admin: "/super-admin/overview",
@@ -54,55 +55,60 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/30 px-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle>Sign in to MedConnect</CardTitle>
-          <CardDescription>
-            Use your work email and password. First time signing in? Use the
-            temporary password you were given.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                autoComplete="username"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
-            {error && (
-              <p role="alert" className="text-sm text-destructive">
-                {error}
-              </p>
-            )}
-            <Button type="submit" disabled={loading}>
-              {loading ? "Signing in..." : "Sign in"}
-            </Button>
-            <a
-              href="/set-password"
-              className="text-center text-sm text-muted-foreground underline underline-offset-4"
-            >
-              First login — set your permanent password
-            </a>
-          </form>
-        </CardContent>
-      </Card>
+      <div className="w-full max-w-sm">
+        <div className="mb-5 flex justify-center">
+          <BrandMark size="lg" />
+        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle>Sign in to MedConnect</CardTitle>
+            <CardDescription>
+              Use your work email and password. First time signing in? Use the
+              temporary password you were given.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  autoComplete="username"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </div>
+              {error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {error}
+                </p>
+              )}
+              <Button type="submit" disabled={loading}>
+                {loading ? "Signing in..." : "Sign in"}
+              </Button>
+              <a
+                href="/set-password"
+                className="text-center text-sm text-muted-foreground underline underline-offset-4"
+              >
+                First login — set your permanent password
+              </a>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
